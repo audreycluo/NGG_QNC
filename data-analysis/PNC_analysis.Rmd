@@ -1,0 +1,2199 @@
+```{r}
+library(dplyr)
+library(tidyr)
+library(nnet)
+library(ggplot2)
+ga_bw<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/birthweight_CHOP_EHR_20210315.csv", na.strings=c("","NA"))
+dem<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/demographics_go1_20161212.csv")
+bw_PRS<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/prs/libi_PNC_EUR_birthweight_PRS.csv")
+ga_PRS<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/prs/libi_PNC_EUR_gestation_PRS.csv")
+imaging_overlap<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/n278_Prematurity.csv")
+pca_euro<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/PNC_2nd_round_EURpc.csv")
+trauma <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/pnc_merged_07_2021.csv")
+ERS <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/PNC_ERS_Census_plus_Trauma.csv")
+ 
+# WHICH VARIABLE IS THE TRAUMA EXPOSURE VARIABLE? shoudl have integer range 0-8
+#names(trauma)
+#for (i in names(trauma))
+#{
+#if(class(trauma[,i]) == "integer" && 0 %in% range(trauma[,i], na.rm=TRUE))  
+#print(i)
+#}
+
+#range(trauma[,5], na.rm=TRUE)
+ 
+
+#range(trauma[,120], na.rm=TRUE)
+
+
+#(names(PRS.plot_temp) %in% sig_PRS)
+#which(names(trauma) == "Cummulative_Stress_Load_No_Rape") 
+
+```
+
+
+#double check CHOP data
+#gestational age and birthweights
+- only 2150 out of 8496 subjects have gestational age or birthweight data (others are missing both).Does that sound about right?
+```{r}
+ 
+colnames(ga_bw)
+head(ga_bw)
+ga_bw[,c(2, 3, 4)]
+
+class(ga_bw$ped_gest_age)
+
+#need to clear out subjects that don't have GA or BW. (keep subjects with either GA or bw)
+ga_bw_clean1 <- ga_bw[is.na(ga_bw[,3])== FALSE | is.na(ga_bw[,4])== FALSE,]
+ 
+length(which(is.na(ga_bw[,2]) == FALSE))
+
+class(as.numeric(ga_bw_clean1$ped_gest_age))
+
+#compare ped_gest_age with ped_gest_age_num (i assume they're identical, but the former is a factor)
+as.numeric(ga_bw_clean1$ped_gest_age)
+ga_bw_clean1[,c(2,3)]
+
+ga_bw_clean1[as.numeric(which(mapply( `%in%` , as.numeric(levels(ga_bw_clean1$ped_gest_age))[ga_bw_clean1$ped_gest_age], as.numeric(ga_bw_clean1$ped_gest_age_num)) == FALSE)),c(2,3)]  #which rows don't match between ped_gest_age and ped_gest_age_num; then look at those rows under these 2 variables. looks like there are some gestational ages that are decimals and they all got rounded down (37.5 rounded down to 37). nothing grossly wrong.
+ 
+
+#add column to ga_bw_clean1 that converts ounces to kg
+ga_bw_clean1 <- mutate(ga_bw_clean1, ped_birth_wt_kg = ped_birth_wt_num/35.274)
+
+```
+
+
+#match HBIDs
+#make large dataframe including relevant variables from each csv
+```{r}
+head(bw_PRS)
+#ga_PRS
+#bw_PRS
+length(which(ga_PRS$HBID == bw_PRS$HBID)) #all the HBID's are in the same  order/are the same in the PRS files 
+ 
+# match ga_bw_clean1, dem, imaging_overlap, pca_euro, trauma, and ERS HBIDs to the PRS files
+length(intersect(ga_bw_clean1$HBID, ga_PRS$HBID)) #only 1317 subjects in CHOP have PRS gestational/bw scores
+length(intersect(dem$HBID, ga_PRS$HBID))
+length(intersect(imaging_overlap$HBID, ga_PRS$HBID))
+length(intersect(pca_euro$HBID, ga_PRS$HBID))
+length(intersect(trauma$HBID, ga_PRS$HBID)) 
+length(intersect(ERS$HBID, ga_PRS$HBID))
+
+ga_bw_clean2 <- ga_bw_clean1[match(ga_PRS$HBID, ga_bw_clean1$HBID),]  
+dem_clean1 <-  dem[match(ga_PRS$HBID, dem$HBID),]
+imaging_overlap_clean1 <- imaging_overlap[match(ga_PRS$HBID, imaging_overlap$HBID),] 
+pca_euro_clean1 <-  pca_euro[match(ga_PRS$HBID, pca_euro$HBID),]
+trauma_clean1 <-  trauma[match(ga_PRS$HBID, trauma$HBID),]
+ERS_clean1 <-  ERS[match(ga_PRS$HBID, ERS$HBID),]
+   
+
+# does ga in imaging_overlap match with ga from chop in the same subjects? what about bw?
+ga_imaging<-as.integer(imaging_overlap_clean1$ga[which(imaging_overlap_clean1$HBID == ga_bw_clean2$HBID)])
+ga_chop<-ga_bw_clean2$ped_gest_age_num[which(ga_bw_clean2$HBID == imaging_overlap_clean1$HBID)]
+which(ga_imaging == ga_chop) #gestational ages all match (except for one person who's missing GA data)
+
+bw_imaging<-as.integer(imaging_overlap_clean1$bw[which(imaging_overlap_clean1$HBID == ga_bw_clean2$HBID)])
+bw_chop<-as.integer(ga_bw_clean2$ped_birth_wt_kg[which(ga_bw_clean2$HBID == imaging_overlap_clean1$HBID)])
+which(bw_imaging == bw_chop) #bw all match (except for 11 CHOP people missing data. can put imaging data into chop)
+
+#put missing ga and bw data from imaging into CHOP dataframe -- maybe just ignore since there's so few people
+  
+
+# make a dataframe that has HBID, ga, bw (kg), PRS, race, ethnicity, PCA, trauma, and ERS
+summary_df <- as.data.frame(cbind(dem_clean1$HBID, dem_clean1$sex, dem_clean1$race, dem_clean1$ethnicity, ga_bw_clean2$ped_gest_age_num, ga_bw_clean2$ped_birth_wt_kg, ga_PRS$Standardized_PRS, bw_PRS$Standardized_PRS, pca_euro_clean1[,6:15], trauma_clean1$envSES, trauma_clean1$Cummulative_Stress_Load_No_Rape, ERS_clean1$ERS_HigherOrder))
+pca_euro_clean1
+colnames(summary_df)<-list("HBID", "sex", "race", "ethnicity", "gest_age", "birthwt_kg","ga_PRS_std", "bw_PRS_std", "PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10", "envSES", "Cummulative_Stress_Load_No_Rape", "ERS_HigherOrder")
+
+
+```
+
+
+
+#make term_status categorical variable
+linear models and ordinal logistic regression (check assumptions)
+```{r}
+ 
+#need to invert gestational age PRS (since PRS is higher for later birth)
+summary_df <- summary_df %>% mutate(ga_PRS_inverse = -1*(ga_PRS_std))
+ 
+#make categorical variable for gestational age: 
+# very preterm less than 32 weeks (technically extremely preterm is < 28 and very preterm is 28-32 wks)
+# moderate-to-late preterm 32-37 weeks
+# full term 37-40 weeks
+# late term 41 + weeks
+ 
+summary_df_dummy <- summary_df %>% mutate(term_status =  ifelse(summary_df$gest_age < 32, "very_preterm", ifelse(summary_df$gest_age >= 32 & summary_df$gest_age < 37, "modtolate_preterm", ifelse(summary_df$gest_age >= 37 & summary_df$gest_age <= 40, "full_term", ifelse(summary_df$gest_age >= 41, "late_term", 0)))))
+
+summary_df_dummy <- summary_df_dummy %>% mutate(term_statusBINARY =  ifelse(summary_df$gest_age < 37, "preterm", "full_term"))
+
+
+summary_df_dummy$term_status <- as.factor(summary_df_dummy$term_status) 
+summary_df_dummy$term_statusBINARY<- as.factor(summary_df_dummy$term_statusBINARY)
+#summary_df_dummy <- summary_df %>% mutate(term_status =  ifelse(summary_df$gest_age < 37, "preterm", ifelse(summary_df$gest_age >= 37 & summary_df$gest_age <= 40, "full_term", ifelse(summary_df$gest_age >= 41, "late_term", 0))))
+
+length(which(summary_df_dummy$term_status == "very_preterm")) # combined extrm preterm and very preterm
+length(which(summary_df_dummy$term_status == "modtolate_preterm"))
+length(which(summary_df_dummy$term_status == "full_term"))
+length(which(summary_df_dummy$term_status == "late_term"))
+
+class(summary_df_dummy$term_status)
+levels(summary_df_dummy$term_status)
+ levels(summary_df_dummy$term_statusBINARY)
+# explore data a bit....
+library("ggpubr")
+library("car")
+ftable(xtabs(~ term_status, data = summary_df_dummy))
+summary(summary_df_dummy$gest_age)
+sd(summary_df_dummy$gest_age, na.rm=TRUE)
+ggdensity(summary_df_dummy$gest_age)
+qqPlot(summary_df_dummy$gest_age)
+shapiro.test(summary_df_dummy$gest_age) #not normally distributed...
+
+ggdensity(summary_df_dummy$ga_PRS_std)
+qqPlot(summary_df_dummy$gest_age)
+ 
+ 
+```
+
+
+#Gestational age and birthweight PRS associations with ga / bw
+```{r}
+# do linear models
+gestation_age_PRS_lm <- lm(gest_age ~ sex + ga_PRS_inverse + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df) 
+summary(gestation_age_PRS_lm) 
+ 
+
+birthweight_PRS_lm <- lm(birthwt_kg ~ sex + bw_PRS_std + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df) 
+summary(birthweight_PRS_lm)
+
+cor(summary_df$birthwt_kg, summary_df$bw_PRS_std, use= "complete.obs")
+# ordinal logistic regression
+library(brant)
+library(MASS)
+m <- polr(term_status ~ sex + ga_PRS_inverse + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = summary_df_dummy, Hess=TRUE)
+summary(m)
+## first check proportional odds assumption: that the 'slope' estimate between each pair of outcomes across two response levels are assumed to be the same regardless of which partition we consider
+# if the probability is greater than your alpha level, then your dataset satisfies this proportional odds assumption
+brant(m) # dataset FAILS proportional odds assumption. Need to do multinomial logistic regression instead.
+ 
+```
+
+#figures for ga and bw phenotype and PRS correlations
+```{r}
+
+library("RColorBrewer")
+ 
+#model=lm(gest_age ~ sex + ga_PRS_inverse + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df) 
+#summary(model) 
+
+(pnc_phen_gaPRS <- ggplot(data=summary_df,aes(y=gest_age, x=ga_PRS_inverse)) +
+  geom_point(alpha = 0.7, size = 2, color = '#D4B9DA') + geom_smooth(method = "lm", se = FALSE, colour='#DF65B0', size = 0.5) + theme(axis.text.x=element_text(size=15), axis.title.x=element_text(size=12), axis.title.y=element_text(size=12)) + ggtitle("PNC") + labs(x="Gestational Age PRS", y="Gestational Age (weeks)", shape = "", color = "") + theme_classic() + stat_cor(method = "pearson", label.x.npc = 0.01, label.y.npc = 0.8, size=5))
+ 
+ggsave(pnc_phen_gaPRS, file="pnc_gestagePRS.pdf", width = 4, height=4, dpi=300)
+ 
+display.brewer.pal(n = 8, name = 'RdBu')
+brewer.pal(n = 8, name = "RdBu")
+
+
+(pnc_phen_bwPRS <- ggplot(data=summary_df,aes(y=birthwt_kg, x=bw_PRS_std)) +
+  geom_point(alpha = 0.7, size = 2, color = '#2166AC') + geom_smooth(method = "lm", se = FALSE, colour='#B2182B', size = 0.5) + theme(axis.text.x=element_text(size=15), axis.title.x=element_text(size=12), axis.title.y=element_text(size=12)) + ggtitle("PNC") + labs(x="Birthweight PRS", y="Birthweight (kg)", shape = "", color = "") + theme_classic() + stat_cor(method = "pearson", label.x.npc = 0.01, label.y.npc = 0.8, size=5))
+ 
+ggsave(pnc_phen_bwPRS, file="pnc_bwPRS.pdf", width = 4, height=4, dpi=300)
+ 
+
+```
+
+
+#multinomial regression (since term_status fails proportional odds assumption)
+```{r}
+ 
+summary_df_dummy$term_status <- relevel(summary_df_dummy$term_status, ref = "full_term")
+test <- multinom(term_status ~ sex + ga_PRS_inverse + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_dummy)
+summary(test)
+ 
+#A one-unit increase in PRS is associated with the DECREASE in the log odds of being very preterm versus full-term in the amount of 0.453 (p=0.001691) and the DECREASE in the log odds of being moderate-to-late preterm by 0.226 (p=0.0078)
+# in contrast, a one unit increase in PRS is associated with an INCREASE in log odds of being late term in the amount of 0.455, p=0.000029
+ 
+ 
+#calculate p-values (since multinom doesn't provide pvals)
+z <- summary(test)$coefficients/summary(test)$standard.errors
+z
+p <- (1 - pnorm(abs(z), 0, 1)) * 2 #2-tailed z
+p
+
+ 
+#The ratio of the probability of choosing one outcome category over the probability of choosing the baseline category is often referred as relative risk 
+
+exp(coef(test)) #odds ratio 
+# so the odds ratio (for one unit increase in PRS - after applying inverse) is 0.634 for being late term versus full term, whereas odds ratio is 1.25 and 1.57 respectively for moderate-to-late preterm and very preterm babies.
+
+library(RVAideMemoire)
+library(broom)
+exp(coef(test))
+oddsratio_df <- OR.multinom(test, ga_PRS_inverse, conf.level = 0.95)
+(tidy(test, conf.int = TRUE, conf.level = 0.95, exponentiate = TRUE)) # yup
+ 
+  
+ 
+ 
+ 
+ 
+```
+
+
+#multinomial regression with term_statusBINOMIAL
+```{r}
+
+  
+summary_df_dummy$term_statusBINARY <- relevel(summary_df_dummy$term_statusBINARY, ref = "full_term")
+test <- multinom(term_statusBINARY ~ sex + ga_PRS_inverse + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_dummy)
+summary(test)
+
+ 
+#calculate p-values (since multinom doesn't provide pvals)
+z <- summary(test)$coefficients/summary(test)$standard.errors
+z
+p <- (1 - pnorm(abs(z), 0, 1)) * 2 #2-tailed z
+p
+
+ 
+#The ratio of the probability of choosing one outcome category over the probability of choosing the baseline category is often referred as relative risk 
+
+
+# the odds ratio (for one unit increase in PRS - after applying inverse) is 1.37 for preterm versus full term babies
+exp(coef(test)) #odds ratio 
+ 
+library(RVAideMemoire)
+library(broom)
+exp(coef(test))
+oddsratio_df <- OR.multinom(test, ga_PRS_inverse, conf.level = 0.95)
+(tidy(test, conf.int = TRUE, conf.level = 0.95, exponentiate = TRUE)) # yup
+ 
+```
+
+
+Plots for Odds ratio of term status and gestational age PRS
+```{r}
+oddsratio_df <- oddsratio_df %>% mutate(term_status = rownames(oddsratio_df))
+oddsratio_df_clean <- oddsratio_df[c(1:3),]
+oddsratio_df_clean$term_status <- as.factor(oddsratio_df_clean$term_status)
+BirthTerm <- c("Late Term", "Moderate to Late Preterm","Very Preterm")
+
+ 
+(p <- ggplot(data=oddsratio_df_clean, aes(y=term_status, x=Odds.ratio, label="Term Status", colour = term_status)) +
+    geom_point(size=2, shape=19)   +
+    geom_errorbarh(aes(xmin=CI.inf, xmax=CI.sup), height=.05) +  
+    coord_fixed(ratio=.3) +
+    geom_vline(xintercept=1, linetype='longdash')  + ggtitle("Birth Term Status and Gestational Age PRS") + xlab("Odds Ratio") + ylab("Term Status") +
+   theme(legend.position = "none", axis.title.y = element_blank(), axis.text.y = element_text(angle=45)) + scale_y_discrete(labels= BirthTerm) )
+     
+ggsave(p, file="TermStatus_OR.pdf", width = 5, height=3, dpi=300)
+
+```
+ 
+ 
+#Check association between MDD, SCZ, BP, PTSD PRS and gestational age/birthweight
+#Check any correlation between the various PRS scores 
+```{r}
+
+PRS_SCZ<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/prs/libi_PNC_EUR_SCZ_PRS.csv")
+PRS_PTSD<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/prs/libi_PNC_EUR_PTSD_PRS.csv")
+PRS_MDD<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/prs/libi_PNC_EUR_MDD_PRS.csv")
+PRS_BIP<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/prs/libi_PNC_EUR_BIP_PRS.csv") 
+PRS_AD<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/prs/Residual_PNC_EUR_AD_PRS.csv")
+PRS_ASD<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/prs/Residual_PNC_EUR_ASD_PRS.csv")
+PRS_IQ<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/prs/Residual_PNC_EUR_IQ_PRS.csv")
+PRS_height<-read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/prs/Residual_Marouli_PNC_EUR_height_PRSfromEUR.csv")
+ 
+# the PRS files all have the same HBID order 
+length(intersect(PRS_height$HBID, ga_PRS$HBID))  
+ 
+ 
+# add PRS scores for psychiatric disorders to summary_df_dummy dataframe
+summary_df_allPRS <- as.data.frame(cbind(summary_df_dummy, PRS_SCZ$Standardized_PRS, PRS_BIP$Standardized_PRS, PRS_MDD$Standardized_PRS, PRS_PTSD$Standardized_PRS, PRS_AD$Standardized_PRS, PRS_ASD$Standardized_PRS, PRS_IQ$Standardized_PRS, PRS_height$Standardized_PRS))
+i <- which(grepl("Standardized_PRS", colnames(summary_df_allPRS)))
+colnames(summary_df_allPRS)[i] <- c("PRS_SCZ", "PRS_BIP", "PRS_MDD", "PRS_PTSD", "PRS_AD", "PRS_ASD", "PRS_IQ", "PRS_height")
+ 
+ 
+```  
+
+
+# run regression models to see if PRS scores of psychiatric disorders predict gestational age and/or birthweight  
+# lol i should've written a loop why did i do this to myself
+```{r}
+gestation_age_PRSscz_lm <- lm(gest_age ~ sex + PRS_SCZ + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(gestation_age_PRSscz_lm) #nope
+
+birthweight_PRSscz_lm <- lm(birthwt_kg ~ sex + PRS_SCZ + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(birthweight_PRSscz_lm) #nope
+
+gestation_age_PRSbip_lm <- lm(gest_age ~ sex + PRS_BIP + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(gestation_age_PRSbip_lm) #nope
+
+birthweight_PRSbip_lm <- lm(birthwt_kg ~ sex + PRS_BIP + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(birthweight_PRSbip_lm) #nope
+
+gestation_age_PRSmdd_lm <- lm(gest_age ~ sex + PRS_MDD + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(gestation_age_PRSmdd_lm) #nope
+
+birthweight_PRSmdd_lm <- lm(birthwt_kg ~ sex + PRS_MDD + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(birthweight_PRSmdd_lm) #nope
+
+gestation_age_PRSptsd_lm <- lm(gest_age ~ sex + PRS_PTSD + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS)
+summary(gestation_age_PRSptsd_lm) #nope
+
+birthweight_PRSptsd_lm <- lm(birthwt_kg ~ sex + PRS_PTSD + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS)
+summary(birthweight_PRSptsd_lm) #nope
+
+##
+gestation_age_PRSAD_lm <- lm(gest_age ~ sex + PRS_AD + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(gestation_age_PRSAD_lm)   #nope
+
+birthweight_PRSAD_lm <- lm(birthwt_kg ~ sex + PRS_AD + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(birthweight_PRSAD_lm) #nope
+ 
+gestation_age_PRSASD_lm <- lm(gest_age ~ sex + PRS_ASD + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(gestation_age_PRSASD_lm) #prob won't survive correction
+
+birthweight_PRSASD_lm <- lm(birthwt_kg ~ sex + PRS_ASD + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(birthweight_PRSASD_lm) #nope
+
+
+gestation_age_PRSIQ_lm <- lm(gest_age ~ sex + PRS_IQ + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(gestation_age_PRSIQ_lm)   #nope
+
+birthweight_PRSIQ_lm <- lm(birthwt_kg ~ sex + PRS_IQ + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(birthweight_PRSIQ_lm) #nope
+
+ 
+gestation_age_PRSheight_lm <- lm(gest_age ~ sex + PRS_height + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(gestation_age_PRSheight_lm)   #nope
+
+birthweight_PRSheight_lm <- lm(birthwt_kg ~ sex + PRS_height + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_allPRS) 
+summary(birthweight_PRSheight_lm) #0.0660661, p=0.01
+ 
+```
+
+
+correlation matrix for PRS scores
+```{r}
+library(ggcorrplot)
+library(Hmisc)
+dat2 <- subset(summary_df_allPRS, select = c(ga_PRS_std, bw_PRS_std, PRS_SCZ, PRS_BIP, PRS_MDD, PRS_PTSD, PRS_AD, PRS_ASD, PRS_IQ, PRS_height))
+ 
+colnames(summary_df_allPRS)
+corr <- round(cor(dat2, use = "complete.obs"), 5)
+order <- c("ga_PRS_std", "bw_PRS_std", "PRS_SCZ", "PRS_BIP", "PRS_MDD", "PRS_PTSD", "PRS_AD", "PRS_ASD", "PRS_IQ", "PRS_height")
+corr1 <- corr[order, order]
+identical(rcorr(as.matrix(dat2)),corr)
+
+rcorr(as.matrix(dat2)) 
+ 
+# compute matrix of correlation p-values
+p.mat <- cor_pmat(dat2)
+
+# Visualize the correlation matrix
+# --------------------------------
+# get lower triangle
+# Leave blank if coefficient not significant
+correlation_matrix <- ggcorrplot(corr1, type = "lower", 
+   lab = TRUE, 
+   outline.col = "white",
+   ggtheme = ggplot2::theme_gray, lab_size = 3,
+   colors = c("#6D9EC1", "white", "#E46726"), hc.order = FALSE, insig = "blank", p.mat=p.mat)
+
+pdf("prs_corr.pdf")
+print(correlation_matrix)
+dev.off()
+ 
+# just wanted to double check p-values on these correlations...
+cor.test(summary_df_allPRS$PRS_SCZ, summary_df_allPRS$ga_PRS_std) 
+summary(lm(PRS_SCZ ~ PRS_BIP, data=summary_df_allPRS ))
+
+cor.test(summary_df$sex, summary_df$birthwt_kg, use = "complete.obs")
+colnames(summary_df)
+ 
+
+```
+ 
+
+#################################################### 
+###############  clinical/GOASSESS   ############### 
+#################################################### 
+ 
+```{r}
+# do all  following steps in the console (until the 3 hashtags)
+setwd("/Users/audreyluo/Box/PhD_Land/Aaron/data/clinical")  
+temp = list.files(pattern="*.csv")
+for(f in temp){
+  print(paste(normalizePath(dirname(f)), fsep = .Platform$file.sep, f, sep = "")) 
+}
+clinical = lapply(temp, read.csv)
+###
+
+
+GO_psychosis_clinicalfactor <- as.data.frame(clinical[2])
+GO1_psychosis_clinicalfactor <- as.data.frame(clinical[3])
+bifactor <- as.data.frame(clinical[5]) # This dimensional scoring can be accomplished with a bifactor model20, which yields specific factors (e.g., externalizing, psychosis) that are orthogonal to the general factor and to each other.
+#bifactor_age_regressed <- as.data.frame(clinical[6])
+corrtraits <- as.data.frame(clinical[7])
+#corrtraits_age_regressed <- as.data.frame(clinical[8])
+psychosis_JCPP <- as.data.frame(clinical[10])
+
+
+#put clinical data in order according to HBID
+GO_psychosis_clinicalfactor_ordered <- GO_psychosis_clinicalfactor[match(summary_df_allPRS$HBID, GO_psychosis_clinicalfactor$HBID),]
+GO1_psychosis_clinicalfactor_ordered <- GO1_psychosis_clinicalfactor[match(summary_df_allPRS$HBID, GO1_psychosis_clinicalfactor$HBID),]   
+bifactor_ordered <- bifactor[match(summary_df_allPRS$HBID, bifactor$HBID),]
+#bifactor_age_regressed_ordered <- bifactor_age_regressed[match(summary_df_allPRS$HBID, bifactor_age_regressed$HBID),]
+corrtraits_ordered <- corrtraits[match(summary_df_allPRS$HBID, corrtraits$HBID),]
+#corrtraits_age_regressed_ordered <- corrtraits_age_regressed[match(summary_df_allPRS$HBID, corrtraits_age_regressed$HBID),]
+psychosis_JCPP_ordered <- psychosis_JCPP[match(summary_df_allPRS$HBID, psychosis_JCPP$HBID),]
+  
+
+colnames(GO_psychosis_clinicalfactor_ordered) <- paste("GO", colnames(GO_psychosis_clinicalfactor_ordered), sep = "_")
+colnames(GO1_psychosis_clinicalfactor_ordered) <- paste("GO1", colnames(GO1_psychosis_clinicalfactor_ordered), sep = "_")
+colnames(bifactor_ordered) <- paste("bifactor", colnames(bifactor_ordered), sep = "_")
+#colnames(bifactor_age_regressed_ordered) <- paste("bifactor_age_regressed", colnames(bifactor_age_regressed_ordered), sep = "_")
+colnames(corrtraits_ordered) <- paste("corrtraits", colnames(corrtraits_ordered), sep = "_")
+#colnames(corrtraits_age_regressed_ordered) <- paste("corrtraits_age_regressed", colnames(corrtraits_age_regressed_ordered), sep = "_")
+colnames(psychosis_JCPP_ordered) <- paste("psychosisJCPP", colnames(psychosis_JCPP_ordered), sep = "_")
+
+#add variables from clinical data to summary_df_allPRS
+# summary_df_PRSclinical <- as.data.frame(bind_cols(summary_df_allPRS, GO_psychosis_clinicalfactor_ordered[,3:7], GO1_psychosis_clinicalfactor_ordered[, 2:7], bifactor_ordered[, 2:6], bifactor_age_regressed_ordered[,2:6], corrtraits_ordered[,2:5], corrtraits_age_regressed_ordered[,2:5], psychosis_JCPP_ordered[,2:8], dem_clean1$ageAtClinicalAssess1, dem_clean1$ageAtCnb1))
+#excluding age regressed (since age will be in lm)
+summary_df_PRSclinical <- as.data.frame(bind_cols(summary_df_allPRS, GO_psychosis_clinicalfactor_ordered[,3:7], GO1_psychosis_clinicalfactor_ordered[, 2:7], bifactor_ordered[, 2:6], corrtraits_ordered[,2:5], psychosis_JCPP_ordered[,2:8], dem_clean1$ageAtClinicalAssess1, dem_clean1$ageAtCnb1))
+ 
+colnames(summary_df_PRSclinical)[60:61] <- c("ageAtClinicalAssess1", "ageAtCnb1")
+   
+identical(PRS_height$Standardized_PRS, summary_df_PRSclinical$PRS_height)
+
+```
+
+
+
+#Gestational age and birthweight PRS associations with ga / bw with age in model
+```{r}
+# do linear models
+gestation_age_PRS_lm <- lm(gest_age ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical) 
+summary(gestation_age_PRS_lm) 
+
+birthweight_PRS_lm <- lm(birthwt_kg ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical) 
+summary(birthweight_PRS_lm)
+
+
+
+```
+
+
+
+#loop multiple 'multiple linear regressions'. exploratory
+#on multiple depende variables -- multivariate analysis?
+
+https://stats.stackexchange.com/questions/18151/methods-to-predict-multiple-dependent-variables
+#https://data.library.virginia.edu/getting-started-with-multivariate-multiple-regression/ 
+
+
+```{r}
+ 
+a <- which(grepl("GO_Overall_Psychopathology", names(summary_df_PRSclinical)))
+b <- which(grepl("psychosisJCPP_F3_Negative_3Fac", names(summary_df_PRSclinical)))
+
+
+fit_gaPRS <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))) # loop through all the variables to see if ga PRS predicts any of the clinical variables
+fit_gaPRS_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3]) # extract p values for ga_PRS predictor 
+fit_gaPRS_sigoutcomes <- which(fit_gaPRS_pval < 0.05) # select the outcome variables for which PRS predictor had pval < 0.05
+#fit_gaPRS[fit_gaPRS_sigoutcomes] # look at corresponding beta values 
+
+fit_bwPRS <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))
+fit_bwPRS_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_bwPRS_sigoutcomes <- which(fit_bwPRS_pval < 0.05)  
+#fit_bwPRS[fit_bwPRS_sigoutcomes]
+
+
+fit_PRS_BIP <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + PRS_BIP + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))
+fit_PRS_BIP_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + PRS_BIP + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_PRS_BIP_sigoutcomes <- which(fit_PRS_BIP_pval < 0.05)  
+#fit_PRS_BIP[fit_PRS_BIP_sigoutcomes]
+
+fit_PRS_MDD <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + PRS_MDD + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))
+fit_PRS_MDD_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + PRS_MDD + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_PRS_MDD_sigoutcomes <- which(fit_PRS_MDD_pval < 0.05)  
+#fit_PRS_MDD[fit_PRS_MDD_sigoutcomes]
+
+fit_PRS_PTSD <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + PRS_PTSD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))
+fit_PRS_PTSD_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + PRS_PTSD + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_PRS_PTSD_sigoutcomes <- which(fit_PRS_PTSD_pval < 0.05)  
+#fit_PRS_PTSD[fit_PRS_PTSD_sigoutcomes]
+
+fit_PRS_SCZ <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + PRS_SCZ + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))
+fit_PRS_SCZ_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + PRS_SCZ + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_PRS_SCZ_sigoutcomes <- which(fit_PRS_SCZ_pval < 0.05)  
+#fit_PRS_SCZ[fit_PRS_SCZ_sigoutcomes]
+
+fit_PRS_AD <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + PRS_AD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))
+fit_PRS_AD_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + PRS_AD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_PRS_AD_sigoutcomes <- which(fit_PRS_AD_pval < 0.05)  
+#fit_PRS_AD[fit_PRS_AD_sigoutcomes]
+
+
+fit_PRS_ASD <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + PRS_ASD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))
+fit_PRS_ASD_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + PRS_ASD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_PRS_ASD_sigoutcomes <- which(fit_PRS_ASD_pval < 0.05)  
+#fit_PRS_ASD[fit_PRS_ASD_sigoutcomes]
+
+
+fit_PRS_IQ <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + PRS_IQ + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))
+fit_PRS_IQ_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + PRS_IQ + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_PRS_IQ_sigoutcomes <- which(fit_PRS_IQ_pval < 0.05)  
+#fit_PRS_IQ[fit_PRS_IQ_sigoutcomes]
+
+ 
+fit_PRS_height <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + PRS_height + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))
+fit_PRS_height_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + PRS_height + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_PRS_height_sigoutcomes <- which(fit_PRS_height_pval < 0.05)  
+#fit_PRS_height[fit_PRS_height_sigoutcomes]
+  
+ 
+# gestational age
+fit_gest_age <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + gest_age + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))
+fit_gest_age_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + gest_age + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_gest_age_sigoutcomes <- which(fit_gest_age_pval < 0.05)  
+#fit_gest_age[fit_gest_age_sigoutcomes]
+
+# birthweight
+fit_bwPRS <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))
+fit_bwPRS_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_bwPRS_sigoutcomes <- which(fit_bwPRS_pval < 0.05)  
+#fit_bwPRS[fit_bwPRS_sigoutcomes]
+
+
+length(which(is.na(summary_df_PRSclinical$birthwt_kg)))
+```
+
+
+#make ggplot heatmap of beta values (PRS predicting GOASSESS and other clinical data)
+##step 1 : get beta values from lm (clinical outcome ~ PRS + age, etc)
+```{r}
+ 
+#may need to change dv indices
+# make dataframe of each PRS and each GOASSESS/clinical variable beta coeff from lm, and adjusted pvalues
+gaPRS_beta <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Estimate"][3]))
+
+bwPRS_beta <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Estimate"][3]))
+
+PRS_BIP_beta <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_BIP + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Estimate"][3]))
+ 
+PRS_MDD_beta <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_MDD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Estimate"][3]))
+
+PRS_PTSD_beta <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_PTSD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Estimate"][3]))
+
+PRS_SCZ_beta <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_SCZ + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Estimate"][3]))
+
+PRS_AD_beta <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_AD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Estimate"][3]))
+
+PRS_ASD_beta <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_ASD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Estimate"][3]))
+
+PRS_IQ_beta <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_IQ + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Estimate"][3]))
+
+PRS_height_beta <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_height + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"Estimate"][3]))
+ 
+
+#these are the adjusted p-values i should use
+pvalues_gaPRS_BH.plot <- as.data.frame(t(p.adjust(fit_gaPRS_pval,method="BH")))
+rownames(pvalues_gaPRS_BH.plot) <- "pvalues_gaPRS_BH"
+ 
+pvalues_bwPRS_BH.plot <- as.data.frame(t(p.adjust(fit_bwPRS_pval,method="BH")))
+rownames(pvalues_bwPRS_BH.plot) <- "pvalues_bwPRS_BH"
+pvalues_PRS_BIP_BH.plot <- as.data.frame(t(p.adjust(fit_PRS_BIP_pval,method="BH")))
+rownames(pvalues_PRS_BIP_BH.plot) <- "pvalues_PRS_BIP_BH"
+pvalues_PRS_MDD_BH.plot <- as.data.frame(t(p.adjust(fit_PRS_MDD_pval,method="BH")))
+rownames(pvalues_PRS_MDD_BH.plot) <- "pvalues_PRS_MDD_BH"
+pvalues_PRS_PTSD_BH.plot <- as.data.frame(t(p.adjust(fit_PRS_PTSD_pval,method="BH")))
+rownames(pvalues_PRS_PTSD_BH.plot) <- "pvalues_PRS_PTSD_BH"
+pvalues_PRS_SCZ_BH.plot <- as.data.frame(t(p.adjust(fit_PRS_SCZ_pval,method="BH")))
+rownames(pvalues_PRS_SCZ_BH.plot) <- "pvalues_PRS_SCZ_BH"
+pvalues_PRS_AD_BH.plot <- as.data.frame(t(p.adjust(fit_PRS_AD_pval,method="BH")))
+rownames(pvalues_PRS_AD_BH.plot) <- "pvalues_PRS_AD_BH"
+pvalues_PRS_ASD_BH.plot <- as.data.frame(t(p.adjust(fit_PRS_ASD_pval,method="BH")))
+rownames(pvalues_PRS_ASD_BH.plot) <- "pvalues_PRS_ASD_BH"
+pvalues_PRS_IQ_BH.plot <- as.data.frame(t(p.adjust(fit_PRS_IQ_pval,method="BH")))
+rownames(pvalues_PRS_IQ_BH.plot) <- "pvalues_PRS_IQ_BH"
+pvalues_PRS_height_BH.plot <- as.data.frame(t(p.adjust(fit_PRS_height_pval,method="BH")))
+rownames(pvalues_PRS_height_BH.plot) <- "pvalues_PRS_height_BH"
+ 
+```
+
+
+#make ggplot heatmap of beta values (PRS predicting GOASSESS and other clinical data)
+##step 2: get the common clinical variables that were significant across PRS
+```{r}
+
+#get the common clinical variables that were significant across PRS
+sig_PRS <- unique(c(names(pvalues_PRS_BIP_BH.plot[which(pvalues_PRS_BIP_BH.plot < 0.05)]), names(pvalues_PRS_MDD_BH.plot[which(pvalues_PRS_MDD_BH.plot < 0.05)]), names(pvalues_PRS_PTSD_BH.plot[which(pvalues_PRS_PTSD_BH.plot < 0.05)]), names(pvalues_PRS_SCZ_BH.plot[which(pvalues_PRS_SCZ_BH.plot < 0.05)]), names(pvalues_PRS_AD_BH.plot[which(pvalues_PRS_AD_BH.plot < 0.05)]),names(pvalues_PRS_height_BH.plot[which(pvalues_PRS_height_BH.plot < 0.05)]), names(pvalues_gaPRS_BH.plot[which(pvalues_gaPRS_BH.plot < 0.05)]), names(pvalues_bwPRS_BH.plot[which(pvalues_bwPRS_BH.plot < 0.05)]),names(pvalues_PRS_ASD_BH.plot[which(pvalues_PRS_ASD_BH.plot < 0.05)]),names(pvalues_PRS_IQ_BH.plot[which(pvalues_PRS_IQ_BH.plot < 0.05)])))
+ 
+ 
+PRS.plot_temp <- rbind(gaPRS_beta, bwPRS_beta, PRS_BIP_beta, PRS_MDD_beta, PRS_PTSD_beta, PRS_SCZ_beta, PRS_AD_beta, PRS_ASD_beta, PRS_IQ_beta, PRS_height_beta) 
+PRS.plot_temp <- PRS.plot_temp %>% mutate(PRS = rownames(PRS.plot_temp))
+
+library(reshape2) 
+PRS.plot_temp2 <-  PRS.plot_temp[(names(PRS.plot_temp) %in% sig_PRS)]
+PRS.plot_temp2<- PRS.plot_temp2 %>% mutate(PRS = rownames(PRS.plot_temp2))
+PRS.plot <- melt(PRS.plot_temp2) 
+
+pval.plot_temp <- rbind(pvalues_gaPRS_BH.plot, pvalues_bwPRS_BH.plot, pvalues_PRS_BIP_BH.plot, pvalues_PRS_MDD_BH.plot, pvalues_PRS_PTSD_BH.plot, pvalues_PRS_SCZ_BH.plot, pvalues_PRS_AD_BH.plot, pvalues_PRS_ASD_BH.plot, pvalues_PRS_IQ_BH.plot, pvalues_PRS_height_BH.plot)
+ 
+PRSpval.plot <-  pval.plot_temp[(names(pval.plot_temp) %in% sig_PRS)]
+ 
+```
+
+
+plot heatmap and geompoint figures for beta values (prs vs. clinical factors)
+```{r}
+#heatmap of beta values (of PRS vs. clinical factor)  
+heatmap.plot_beta <- ggplot(data = PRS.plot , aes(x = PRS, y = variable)) +
+  geom_tile(aes(fill = value), color = "black") + labs(fill = "beta value") + 
+  scale_fill_gradientn(colors = hcl.colors(20, "BrBG")) +
+  theme(axis.text.y = element_text(size = 6), axis.text.x = element_text(angle=45, hjust = 1))
+
+pdf("prs_heatmap_beta.pdf")
+print(heatmap.plot_beta)
+dev.off()
+
+
+#add column for significance in dataframe...
+PRSpval.plot <- PRSpval.plot %>% mutate(PRS = PRS.plot$PRS[1:10])
+PRSpval.plot <- melt(PRSpval.plot) 
+identical(PRS.plot$PRS, PRSpval.plot$PRS) # excellent :D 
+identical(PRS.plot$variable, PRSpval.plot$variable) # excellent :D 
+colnames(PRSpval.plot)[3] <- paste("adjusted_p", colnames(PRSpval.plot)[3], sep = ".")
+PRS.plot_with_pval <- PRS.plot %>% mutate(adjusted_p.value = PRSpval.plot$adjusted_p.value, significance = ifelse(PRSpval.plot$adjusted_p.value < 0.05, "sig", "insig")) # double check betas and pvalues
+
+
+# geom_point
+geompoint.plot_beta <- (ggplot(data = PRS.plot_with_pval , aes(x = PRS, y = variable, shape=significance)) +
+  geom_point(aes(size=abs(value), color = value<0)) + labs(size = "magnitude of beta value") + scale_shape_manual(values = c(1, 16)) + 
+  theme_minimal()+  coord_fixed(ratio=.7) +
+  theme(axis.text.y = element_text(size = 6), axis.text.x = element_text(angle=45, hjust = 1)))
+
+ggsave(geompoint.plot_beta, file="prs_beta.pdf", dpi=300)
+
+ 
+   
+ 
+```
+
+
+#make heatmap of t-values (of clinical factors)
+# step 1: extract t values
+```{r}
+#extract t-values and make heatmap of t-vals
+# make dataframe of each PRS and each GOASSESS/clinical variable tval from lm 
+gaPRS_tval <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"t value"][3]))
+ 
+bwPRS_tval <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"t value"][3]))
+
+PRS_BIP_tval <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_BIP + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"t value"][3]))
+ 
+PRS_MDD_tval <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_MDD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"t value"][3]))
+
+PRS_PTSD_tval <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_PTSD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"t value"][3]))
+
+PRS_SCZ_tval <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_SCZ + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"t value"][3]))
+
+PRS_AD_tval <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_AD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"t value"][3]))
+
+PRS_ASD_tval <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_ASD + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"t value"][3]))
+
+PRS_IQ_tval <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_IQ + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"t value"][3]))
+
+PRS_height_tval <- as.data.frame(lapply(summary_df_PRSclinical[,29:55], function(x) summary(lm(x ~ sex + PRS_height + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))$coefficients[,"t value"][3]))
+
+
+PRS.plot_temp_tval <- rbind(gaPRS_tval, bwPRS_tval, PRS_BIP_tval, PRS_MDD_tval, PRS_PTSD_tval, PRS_SCZ_tval, PRS_AD_tval, PRS_ASD_tval, PRS_IQ_tval, PRS_height_tval) 
+PRS.plot_temp_tval <- PRS.plot_temp_tval %>% mutate(PRS = rownames(PRS.plot_temp_tval))
+
+
+library(reshape2) 
+PRS.plot_temp_tval <-  PRS.plot_temp_tval[(names(PRS.plot_temp_tval) %in% sig_PRS)]
+PRS.plot_temp_tval<- PRS.plot_temp_tval %>% mutate(PRS = rownames(PRS.plot_temp_tval))
+PRS.plot_tval <- melt(PRS.plot_temp_tval) 
+
+
+#add column for significance in dataframe...
+identical(PRS.plot_tval$PRS, PRSpval.plot$PRS) # excellent :D 
+identical(PRS.plot_tval$variable, PRSpval.plot$variable) # excellent :D 
+PRS.plot_tval_pval <- PRS.plot_tval %>% mutate(adjusted_p.value = PRSpval.plot$adjusted_p.value, significance = ifelse(PRSpval.plot$adjusted_p.value < 0.05, "sig", "insig")) # double check betas and pvalues
+
+```
+
+
+plot heatmap and geompoint figures for t values (prs vs. clinical factors)
+```{r}
+#try geom_point
+geompoint.plot_tval <- (ggplot(data = PRS.plot_tval_pval , aes(x = PRS, y = variable, shape=significance)) +
+  geom_point(aes(color = value, size = abs(value))) + labs(size = "abs value of t-value", color = "t-value") + scale_shape_manual(values = c(1, 16)) + 
+  theme_minimal()+  coord_fixed(ratio=.7) +
+  theme(axis.text.y = element_text(size = 6), axis.text.x = element_text(angle=45, hjust = 1)))
+
+ggsave(geompoint.plot_tval, file="prs_tval.pdf", dpi=300)
+ 
+
+#heatmap of beta values (of PRS vs. clinical factor) that are significant after BH adjustment
+library(RColorBrewer)
+
+(heatmap.plot_tval <- ggplot(data = PRS.plot_tval , aes(x = PRS, y = variable)) + 
+  geom_tile(aes(fill = value), color = "black") + labs(fill = "t-value") +
+    scale_fill_gradientn(colors = hcl.colors(20, "Spectral")) +
+  theme(axis.text.y = element_text(size = 6), axis.text.x = element_text(angle=45, hjust = 1)))
+pdf("prs_heatmap_tval.pdf")
+print(heatmap.plot_tval)
+dev.off()
+
+ 
+# subselect the significant pvals after multiple comparison correction for each variable (not sure how I'll do this...)
+# choose only the factors listed in pvalues_gaPRS_BH
+summary_df_PRSclinical[(names(summary_df_PRSclinical) %in% rownames(as.data.frame(pvalues_gaPRS_BH)))]
+
+ 
+#make dataframes that include the data for the variables that have significant adjusted p-values
+#each df should include PRS (x-axis) and GOASSESS/clinical variables (y-axis) scores
+gaPRS_dat2 <- as.data.frame(cbind(summary_df_PRSclinical$ga_PRS_inverse, gaPRS_col.use))
+names(gaPRS_dat2)[1] <- "ga_PRS_inverse"
+  
+ 
+```
+
+ 
+ ########## ########## ########## ########## ########## ########## ##########
+  ########## ########## ########## ########## ########## ########## ##########
+   ########## ########## ########## ########## ########## ########## ########## ##########
+    ########## ########## ########## ########## ########## ########## ########## ##########
+     ########## ########## ########## ########## ########## ########## ########## ########## 
+     FINISH THIS 
+#include envSES and ERS as covariates 
+### need to do these analyses with Cummulative_Stress_Load_No_Rape 
+```{r}
+# ga and bw PRS not correlated to ERS_bifactor or envSES
+cor.test(summary_df_PRSclinical$ga_PRS_inverse, summary_df_PRSclinical$Cummulative_Stress_Load_No_Rape) 
+cor.test(summary_df_PRSclinical$ga_PRS_inverse, summary_df_PRSclinical$envSES)
+cor.test(summary_df_PRSclinical$bw_PRS_std, summary_df_PRSclinical$envSES)
+cor.test(summary_df_PRSclinical$bw_PRS_std, summary_df_PRSclinical$Cummulative_Stress_Load_No_Rape) 
+ 
+# nor are gestational age and birthweight
+cor.test(summary_df_PRSclinical$gest_age, summary_df_PRSclinical$Cummulative_Stress_Load_No_Rape) 
+cor.test(summary_df_PRSclinical$gest_age, summary_df_PRSclinical$envSES) 
+cor.test(summary_df_PRSclinical$birthwt_kg, summary_df_PRSclinical$Cummulative_Stress_Load_No_Rape) 
+cor.test(summary_df_PRSclinical$birthwt_kg, summary_df_PRSclinical$envSES) 
+ 
+# but GO_Overall_Psychopath significantly correlated (though weak)
+cor.test(summary_df_PRSclinical$GO_Overall_Psychopathology, summary_df_PRSclinical$Cummulative_Stress_Load_No_Rape)  # p-value = 8.265e-10, r= 0.08521375 
+cor.test(summary_df_PRSclinical$GO_Overall_Psychopathology, summary_df_PRSclinical$envSES) # p-value = 2.303e-06, r= -0.06562512 -- but in the opposite direction as expected 
+ 
+ 
+
+a <- which(grepl("GO_Overall_Psychopathology", names(summary_df_PRSclinical)))
+b <- which(grepl("psychosisJCPP_F3_Negative_3Fac", names(summary_df_PRSclinical)))
+ 
+##### gestage PRS
+fit_env_gaPRS <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor, data=summary_df_PRSclinical))) # loop through all the variables to see if ga PRS predicts any of the clinical variables
+fit_env_gaPRS_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3]) # extract p values for ga_PRS predictor 
+fit_env_gaPRS_sigoutcomes <- which(fit_env_gaPRS_pval < 0.05) # select the outcome variables for which PRS predictor had pval < 0.05
+fit_env_gaPRS[fit_env_gaPRS_sigoutcomes]  
+
+fit_gaPRS_sigoutcomes <- which(fit_gaPRS_pval < 0.05)  
+fit_gaPRS[fit_gaPRS_sigoutcomes]
+
+identical(fit_env_gaPRS_sigoutcomes, fit_gaPRS_sigoutcomes)
+#0.0427400  0.0129047   3.312 0.000933 (fit_gaPRS)
+# 0.0408300  0.0128460   3.178  0.00149 (fit_e)
+hits_gaPRS_env <- which(p.adjust(fit_env_gaPRS_pval, method = "BH") < 0.05) # the beta kind of went down and p-val increased?
+ 
+
+##### birthweight PRS
+fit_env_bwPRS <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor, data=summary_df_PRSclinical))
+fit_env_bwPRS_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_env_bwPRS_sigoutcomes <- which(fit_env_bwPRS_pval < 0.05)  
+#fit_env_bwPRS[fit_env_bwPRS_sigoutcomes]
+hits_bwPRS_env <- which(p.adjust(fit_env_bwPRS_pval, method = "BH") < 0.05)
+ 
+length(fit_env_bwPRS_sigoutcomes) #GO1_Psychosis_Positive no longer a hit after adding env covariates
+length(fit_bwPRS_sigoutcomes)
+ 
+
+##### MDD PRS
+fit_env_PRS_MDD <- lapply(summary_df_PRSclinical[,a:b], function(x) lm(x ~ sex + PRS_MDD + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor, data=summary_df_PRSclinical))
+fit_env_PRS_MDD_pval <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + PRS_MDD + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 +  envSES + ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_env_PRS_MDD_sigoutcomes <- which(fit_env_PRS_MDD_pval < 0.05)  
+fit_env_PRS_MDD[fit_env_PRS_MDD_sigoutcomes]
+fit_PRS_MDD[fit_PRS_MDD_sigoutcomes]
+identical(fit_env_PRS_MDD_sigoutcomes, fit_PRS_MDD_sigoutcomes) #true
+ 
+which(p.adjust(fit_env_PRS_MDD_pval, method = "BH") < 0.05)
+which(p.adjust(fit_PRS_MDD_pval, method = "BH") < 0.05)
+
+```
+
+ 
+# check for interaction effects – overall psychopath with environmental scores, and with age 
+http://www.sthda.com/english/articles/40-regression-analysis/164-interaction-effect-in-multiple-regression-essentials/
+no significant interactions, can ditch
+
+```{r}
+library(tidyverse)
+library(caret)
+
+
+fit_env_gaPRS  
+# interaction 1: ga_PRS_inverse:envSES
+fit_interact_gaPRS1 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ga_PRS_inverse:envSES, data=summary_df_PRSclinical)))  
+fit_interact_gaPRS1_pval_17 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ga_PRS_inverse:envSES, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][17]) # pvalue of interaction
+fit_interact_gaPRS1_pval_3 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ga_PRS_inverse:envSES, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])
+fit_interact_gaPRS1_sigoutcomes_17 <- which(fit_interact_gaPRS1_pval_17 < 0.05)  
+fit_interact_gaPRS1_sigoutcomes_3 <- which(fit_interact_gaPRS1_pval_3 < 0.05) 
+which(p.adjust(fit_interact_gaPRS1_pval_3, method = "BH") < 0.05) # none survive correction
+
+fit_interact_gaPRS1 
+fit_interact_gaPRS1_sigoutcomes_3
+fit_env_gaPRS_sigoutcomes
+x <- intersect(fit_env_gaPRS_sigoutcomes, fit_interact_gaPRS1_sigoutcomes_3)
+fit_env_gaPRS_sigoutcomes[-x] # the GOASSESS factors become insignificant after introducing interaction term, even though the interaction itself is not significant
+
+#whew this will require some important summarizing and clarification#
+
+
+# interaction 2: ga_PRS_inverse:ERS_Bifactor
+fit_interact_gaPRS2 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ga_PRS_inverse:ERS_Bifactor, data=summary_df_PRSclinical)))  
+summary(fit_interact_gaPRS2)
+fit_interact_gaPRS2_pval_17 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ga_PRS_inverse:ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][17])  
+fit_interact_gaPRS2_pval_3 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ga_PRS_inverse:ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3]) 
+fit_interact_gaPRS2_sigoutcomes_17 <- which(fit_interact_gaPRS2_pval_17 < 0.05)  
+fit_interact_gaPRS2_sigoutcomes_3 <- which(fit_interact_gaPRS2_pval_3 < 0.05) 
+which(p.adjust(fit_interact_gaPRS2_pval_17, method = "BH") < 0.05)
+which(p.adjust(fit_env_gaPRS_pval, method = "BH") < 0.05)
+
+ 
+# interaction 3: ga_PRS_inverse:envSES and ga_PRS_inverse:ERS_Bifactor
+fit_interact_gaPRS3 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ga_PRS_inverse:envSES + ga_PRS_inverse:ERS_Bifactor, data=summary_df_PRSclinical)))  
+summary(fit_interact_gaPRS2)
+fit_interact_gaPRS3_pval_17 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ga_PRS_inverse:envSES + ga_PRS_inverse:ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][17])
+fit_interact_gaPRS3_pval_3 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ga_PRS_inverse:envSES + ga_PRS_inverse:ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])
+
+
+fit_interact_gaPRS3_sigoutcomes <- which(fit_interact_gaPRS3_pval_17 < 0.05)  # if introduce interaction between gaPRS:envSES and gaPRS:ERS, GO_overall_psychopath completely goes away
+which(p.adjust(fit_interact_gaPRS3_pval_17, method = "BH") < 0.05)
+which(p.adjust(fit_interact_gaPRS3_sigoutcomes, method = "BH") < 0.05)
+fit_interact_gaPRS3 
+
+
+# interaction 4: age:env and age:ERS_Bifactor
+fit_interact_gaPRS4 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ageAtClinicalAssess1:envSES + ageAtClinicalAssess1:ERS_Bifactor, data=summary_df_PRSclinical)))  
+
+
+fit_interact_gaPRS4_pval_17 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ageAtClinicalAssess1:envSES + ageAtClinicalAssess1:ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][17])
+fit_interact_gaPRS4_pval_3 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ageAtClinicalAssess1:envSES + ageAtClinicalAssess1:ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])
+
+
+fit_interact_gaPRS4_sigoutcomes <- which(fit_interact_gaPRS4_pval < 0.05)  # if introduce interaction between gaPRS:envSES and gaPRS:ERS, GO_overall_psychopath completely goes away
+which(p.adjust(fit_interact_gaPRS4_pval_17, method = "BH") < 0.05)
+fit_interact_gaPRS4 
+
+
+#######################################################
+# birthwt_PRS
+
+# interaction 1: bw_PRS_std:envSES
+fit_interact_bwPRS1 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + bw_PRS_std:envSES, data=summary_df_PRSclinical)))  
+fit_interact_bwPRS1_pval_17 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + bw_PRS_std:envSES, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][17]) # pvalue of interaction
+fit_interact_bwPRS1_pval_3 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + bw_PRS_std:envSES, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])
+fit_interact_bwPRS1_sigoutcomes_17 <- which(fit_interact_bwPRS1_pval_17 < 0.05)  
+fit_interact_bwPRS1_sigoutcomes_3 <- which(fit_interact_bwPRS1_pval_3 < 0.05) 
+which(p.adjust(fit_interact_bwPRS1_pval_17, method = "BH") < 0.05) # none survive correction
+
+fit_interact_bwPRS1 
+fit_interact_bwPRS1_sigoutcomes_3
+fit_env_bwPRS_sigoutcomes
+x <- intersect(fit_env_bwPRS_sigoutcomes, fit_interact_bwPRS1_sigoutcomes_3)
+fit_env_bwPRS_sigoutcomes[-x]  
+
+   
+
+# interaction 2: bw_PRS_std:ERS_Bifactor
+fit_interact_bwPRS2 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + bw_PRS_std:ERS_Bifactor, data=summary_df_PRSclinical)))  
+summary(fit_interact_bwPRS2)
+fit_interact_bwPRS2_pval_17 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + bw_PRS_std:ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][17])  
+fit_interact_bwPRS2_pval_3 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + bw_PRS_std:ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3]) 
+fit_interact_bwPRS2_sigoutcomes_17 <- which(fit_interact_bwPRS2_pval_17 < 0.05)  
+fit_interact_bwPRS2_sigoutcomes_3 <- which(fit_interact_bwPRS2_pval_3 < 0.05) 
+which(p.adjust(fit_interact_bwPRS2_pval_17, method = "BH") < 0.05)
+which(p.adjust(fit_env_bwPRS_pval, method = "BH") < 0.05)
+
+ 
+# interaction 3: bw_PRS_std:envSES and bw_PRS_std:ERS_Bifactor
+fit_interact_bwPRS3 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + bw_PRS_std:envSES + bw_PRS_std:ERS_Bifactor, data=summary_df_PRSclinical)))  
+summary(fit_interact_bwPRS2)
+fit_interact_bwPRS3_pval_17 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + bw_PRS_std:envSES + bw_PRS_std:ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][17])
+fit_interact_bwPRS3_pval_3 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + bw_PRS_std:envSES + bw_PRS_std:ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])
+
+
+fit_interact_bwPRS3_sigoutcomes <- which(fit_interact_bwPRS3_pval_17 < 0.05)  # if introduce interaction between bwPRS:envSES and bwPRS:ERS, GO_overall_psychopath completely goes away
+which(p.adjust(fit_interact_bwPRS3_pval_17, method = "BH") < 0.05)
+which(p.adjust(fit_interact_bwPRS3_sigoutcomes, method = "BH") < 0.05)
+fit_interact_bwPRS3 
+ 
+# interaction 4: age:env and age:ERS_Bifactor
+fit_interact_bwPRS4 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ageAtClinicalAssess1:envSES + ageAtClinicalAssess1:ERS_Bifactor, data=summary_df_PRSclinical)))  
+
+
+fit_interact_bwPRS4_pval_17 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ageAtClinicalAssess1:envSES + ageAtClinicalAssess1:ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][17])
+fit_interact_bwPRS4_pval_3 <- lapply(summary_df_PRSclinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + envSES + ERS_Bifactor + ageAtClinicalAssess1:envSES + ageAtClinicalAssess1:ERS_Bifactor, data=summary_df_PRSclinical))$coefficients[,"Pr(>|t|)"][3])
+
+
+fit_interact_bwPRS4_sigoutcomes <- which(fit_interact_bwPRS4_pval_3 < 0.05)  # if introduce interaction between bwPRS:envSES and bwPRS:ERS, GO_overall_psychopath completely goes away
+which(p.adjust(fit_interact_bwPRS4_pval_17, method = "BH") < 0.05)
+fit_interact_bwPRS4[16]
+
+ 
+ 
+```
+
+
+# sensitivity / mediation analysis
+-  there is an indirect effect of the ga and bw PRS on the likelihood of psychopathology via envSES or trauma
+- IV = ga or bw PRS
+- DV = GOASSESS factors
+- mediator = envSES and trauma (2 models)
+
+1) Test the total effect. Here we are looking if any change in ga and bw PRS impacts the DV at all   
+2) Test the effect of the independent variable on the mediator. 
+3) Test the mediator's and the independent variable’s effect on the dependent variable.
+4) Estimate various quantities for causal mediation analysis, meaning that we will compare the direct to the indirect effect, giving us more insight into what is going on in the data.
+https://towardsdatascience.com/doing-and-reporting-your-first-mediation-analysis-in-r-2fe423b92171 
+```{r}
+cor.test(summary_df_PRSclinical$envSES, summary_df_PRSclinical$ERS_Bifactor) #these two are highly correlated
+
+gaPRS_cols <- rownames(as.data.frame(hits_gaPRS_env)) 
+gaPRS_indices <- match(c(gaPRS_cols),names(summary_df_PRSclinical))
+ 
+bwPRS_cols <- rownames(as.data.frame(hits_bwPRS_env))
+bwPRS_indices <- match(c(bwPRS_cols),names(summary_df_PRSclinical))
+
+fit_env_gaPRS <- lapply(summary_df_PRSclinical[,gaPRS_indices], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical)))  
+
+fit_env_bwPRS <- lapply(summary_df_PRSclinical[,bwPRS_indices], function(x) lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical))
+
+ 
+##### does IV have effect on mediator?
+fit_gaPRS_mediator_envSES <- lm(envSES ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical) 
+summary(fit_gaPRS_mediator_envSES)
+
+fit_bwPRS_mediator_envSES <- lm(envSES ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical)
+summary(fit_bwPRS_mediator_envSES)
+
+fit_gaPRS_mediator_ERSbif <- lm(ERS_Bifactor ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical)
+summary(fit_gaPRS_mediator_ERSbif)
+
+fit_gaPRS_mediator_ERSbif <- lm(ERS_Bifactor ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=summary_df_PRSclinical)
+summary(fit_gaPRS_mediator_ERSbif)
+
+ 
+ 
+
+```
+
+END SECTION THAT NEEDS TO BE FINISEHD LOL
+######### ########## ########## ########## ########## ########## ########## ##########
+ ########## ########## ########## ########## ########## ##########
+ 
+ 
+ 
+ 
+  
+ 
+###################################### 
+###############  CNB   ############### 
+###################################### 
+# load cnb data  
+```{r}
+
+setwd("/Users/audreyluo/Box/PhD_Land/Aaron/data/cnb")  
+temp2 = list.files(pattern="*.csv")
+for(f in temp2){
+  print(paste(normalizePath(dirname(f)), fsep = .Platform$file.sep, f, sep = "")) 
+}
+cnb = lapply(temp2, read.csv)
+# all of these are z scores. but i still have no idea what the variables mean lol especially in cnb[4]
+colnames(as.data.frame(cnb[1]))  
+colnames(as.data.frame(cnb[2]))
+colnames(as.data.frame(cnb[3])) # no idea what these are lol
+colnames(as.data.frame(cnb[4])) # dunno what these are!!!!!
+colnames(as.data.frame(cnb[5])) # age regressed - don't need, just include age in model
+
+sd(as.data.frame(cnb[4])$wm_s_z, na.rm=TRUE)
+
+summary(as.data.frame(cnb[2]))
+summary(as.data.frame(cnb[4]))
+
+identical(as.data.frame(cnb[1])$HBID, as.data.frame(cnb[2])$HBID) # hbid's are the same
+# what the heck is NAR? not age regressed???
+# i think i'll look at cnb[1] and cnb[2] for now since idk what the rest of them are. maybe cnb2 is just the age regressed version of cnb1...
+
+cnb_factor_scores_fr <- as.data.frame(cnb[1])
+cnb_factor_scores_frar <- as.data.frame(cnb[2])
+cnb_wrat_scores <- as.data.frame(cnb[3])
+cnb_zscores_fr <- as.data.frame(cnb[4])
+
+#put cnb data in order according to HBID
+cnb_factor_scores_fr_ordered <- cnb_factor_scores_fr[match(summary_df_allPRS$HBID, cnb_factor_scores_fr$HBID),]
+cnb_factor_scores_frar_ordered <- cnb_factor_scores_frar[match(summary_df_allPRS$HBID, cnb_factor_scores_frar$HBID),]   
+cnb_wrat_scores_ordered <- cnb_wrat_scores[match(summary_df_allPRS$HBID, cnb_wrat_scores$HBID),]   
+cnb_zscores_ordered <- cnb_zscores_fr[match(summary_df_allPRS$HBID, cnb_zscores_fr$HBID),]   
+
+
+#make large df combining summary_df_allPRS with cnb 
+temp_cnb <- as.data.frame(bind_cols(summary_df_allPRS, cnb_factor_scores_fr_ordered,  cnb_factor_scores_frar_ordered, cnb_wrat_scores_ordered,cnb_zscores_ordered, dem_clean1$ageAtClinicalAssess1, dem_clean1$ageAtCnb1))
+
+colnames(temp_cnb)[89:90] <- c("age_clinical", "age_cnb")
+temp_cnb <- temp_cnb[, -c(29, 43, 57, 60)]
+colnames(temp_cnb)
+
+##########
+age_reg_mod <- lm(NAR_Overall_Accuracy ~ age_cnb, data=temp_cnb)
+summary(age_reg_mod)
+cbind(predict(age_reg_mod, temp_cnb), cnb_factor_scores_frar_ordered$Overall_Accuracy) # lol did not work. i'm so confused as to what NAR and stuff mean now
+  
+
+```
+
+
+###CNB
+# multivariate regression with PRS on cnb factors
+i'm actually still pretty confused as to what the variables are but we shall see
+```{r}
+fit_cnb_gaPRS <- lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + ga_PRS_std + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb)))  
+fit_cnb_gaPRS_pval <- lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + ga_PRS_std + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Pr(>|t|)"][3])  
+fit_cnb_gaPRS_sigoutcomes <- which(fit_cnb_gaPRS_pval < 0.05)  
+fit_cnb_gaPRS[fit_cnb_gaPRS_sigoutcomes]  
+
+fit_cnb_bwPRS <- lapply(temp_cnb[,29:84], function(x) lm(x ~ sex + bw_PRS_std + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))
+fit_cnb_bwPRS_pval <- lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + bw_PRS_std + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Pr(>|t|)"][3])  
+fit_cnb_bwPRS_sigoutcomes <- which(fit_cnb_bwPRS_pval < 0.05)  
+fit_cnb_bwPRS[fit_cnb_bwPRS_sigoutcomes]
+
+
+fit_cnb_PRS_BIP <- lapply(temp_cnb[,29:84], function(x) lm(x ~ sex + PRS_BIP + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))
+fit_cnb_PRS_BIP_pval <- lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_BIP + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Pr(>|t|)"][3])  
+fit_cnb_PRS_BIP_sigoutcomes <- which(fit_cnb_PRS_BIP_pval < 0.05)  
+fit_cnb_PRS_BIP[fit_cnb_PRS_BIP_sigoutcomes]
+
+
+fit_cnb_PRS_MDD <- lapply(temp_cnb[,29:84], function(x) lm(x ~ sex + PRS_MDD + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))
+fit_cnb_PRS_MDD_pval <- lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_MDD + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Pr(>|t|)"][3])  
+fit_cnb_PRS_MDD_sigoutcomes <- which(fit_cnb_PRS_MDD_pval < 0.05)  
+fit_cnb_PRS_MDD[fit_cnb_PRS_MDD_sigoutcomes]
+
+
+###F1_Exec_Comp_Cog_Accuracy        F3_Memory_Accuracy 
+fit_cnb_PRS_PTSD <- lapply(temp_cnb[,29:84], function(x) lm(x ~ sex + PRS_PTSD + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))
+fit_cnb_PRS_PTSD_pval <- lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_PTSD + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Pr(>|t|)"][3])  
+fit_cnb_PRS_PTSD_sigoutcomes <- which(fit_cnb_PRS_PTSD_pval < 0.05)  
+fit_cnb_PRS_PTSD[fit_cnb_PRS_PTSD_sigoutcomes]
+fit_cnb_PRS_PTSD_pval[fit_cnb_PRS_PTSD_sigoutcomes] # won't survive correction
+
+
+# many
+fit_cnb_PRS_SCZ <- lapply(temp_cnb[,29:84], function(x) lm(x ~ sex + PRS_SCZ  + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))
+fit_cnb_PRS_SCZ_pval <- lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_SCZ + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Pr(>|t|)"][3])  
+fit_cnb_PRS_SCZ_sigoutcomes <- which(fit_cnb_PRS_SCZ_pval < 0.05)  
+fit_cnb_PRS_SCZ[fit_cnb_PRS_SCZ_sigoutcomes]
+fit_cnb_PRS_SCZ_pval[fit_cnb_PRS_SCZ_sigoutcomes] 
+ 
+fit_cnb_PRS_AD <- lapply(temp_cnb[,29:84], function(x) lm(x ~ sex + PRS_AD + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))
+fit_cnb_PRS_AD_pval <- lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_AD + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Pr(>|t|)"][3])  
+fit_cnb_PRS_AD_sigoutcomes <- which(fit_cnb_PRS_AD_pval < 0.05)  
+fit_cnb_PRS_AD[fit_cnb_PRS_AD_sigoutcomes]
+fit_cnb_PRS_AD_pval[fit_cnb_PRS_AD_sigoutcomes] 
+ 
+fit_cnb_PRS_ASD <- lapply(temp_cnb[,29:84], function(x) lm(x ~ sex + PRS_ASD + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))
+fit_cnb_PRS_ASD_pval <- lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_ASD + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Pr(>|t|)"][3])  
+fit_cnb_PRS_ASD_sigoutcomes <- which(fit_cnb_PRS_ASD_pval < 0.05)  
+fit_cnb_PRS_ASD[fit_cnb_PRS_ASD_sigoutcomes]
+fit_cnb_PRS_ASD_pval[fit_cnb_PRS_ASD_sigoutcomes] 
+
+#robust effects
+fit_cnb_PRS_IQ <- lapply(temp_cnb[,29:84], function(x) lm(x ~ sex + PRS_IQ + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))
+fit_cnb_PRS_IQ_pval <- lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_IQ + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Pr(>|t|)"][3])  
+fit_cnb_PRS_IQ_sigoutcomes <- which(fit_cnb_PRS_IQ_pval < 0.05)  
+fit_cnb_PRS_IQ[fit_cnb_PRS_IQ_sigoutcomes]
+fit_cnb_PRS_IQ_pval[fit_cnb_PRS_IQ_sigoutcomes] 
+
+#
+fit_cnb_PRS_height <- lapply(temp_cnb[,29:84], function(x) lm(x ~ sex + PRS_height + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))
+fit_cnb_PRS_height_pval <- lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_height + age_cnb +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Pr(>|t|)"][3])  
+fit_cnb_PRS_height_sigoutcomes <- which(fit_cnb_PRS_height_pval < 0.05)  
+fit_cnb_PRS_height[fit_cnb_PRS_height_sigoutcomes]
+fit_cnb_PRS_height_pval[fit_cnb_PRS_height_sigoutcomes] 
+```
+
+ 
+###CNB
+#make ggplot heatmap of beta values (PRS predicting cnb)
+##step 1 : get beta values from lm (cnb factor ~ PRS + age, etc) and adjusted pvalues
+```{r}
+
+# make dataframe of each PRS and each GOASSESS/clinical variable beta coeff from lm, and adjusted pvalues
+gaPRS_beta_cnb <- as.data.frame(lapply(temp_cnb[,29:55], function(x) summary(lm(x ~ sex + ga_PRS_std + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Estimate"][3]))
+
+bwPRS_beta_cnb <- as.data.frame(lapply(temp_cnb[,29:55], function(x) summary(lm(x ~ sex + bw_PRS_std + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Estimate"][3]))
+
+PRS_BIP_beta_cnb <- as.data.frame(lapply(temp_cnb[,29:55], function(x) summary(lm(x ~ sex + PRS_BIP + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Estimate"][3]))
+ 
+PRS_MDD_beta_cnb <- as.data.frame(lapply(temp_cnb[,29:55], function(x) summary(lm(x ~ sex + PRS_MDD + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Estimate"][3]))
+
+PRS_PTSD_beta_cnb <- as.data.frame(lapply(temp_cnb[,29:55], function(x) summary(lm(x ~ sex + PRS_PTSD + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Estimate"][3]))
+
+PRS_SCZ_beta_cnb <- as.data.frame(lapply(temp_cnb[,29:55], function(x) summary(lm(x ~ sex + PRS_SCZ + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Estimate"][3]))
+
+PRS_AD_beta_cnb <- as.data.frame(lapply(temp_cnb[,29:55], function(x) summary(lm(x ~ sex + PRS_AD + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Estimate"][3]))
+
+PRS_ASD_beta_cnb <- as.data.frame(lapply(temp_cnb[,29:55], function(x) summary(lm(x ~ sex + PRS_ASD + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Estimate"][3]))
+
+PRS_IQ_beta_cnb <- as.data.frame(lapply(temp_cnb[,29:55], function(x) summary(lm(x ~ sex + PRS_IQ + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Estimate"][3]))
+
+PRS_height_beta_cnb <- as.data.frame(lapply(temp_cnb[,29:55], function(x) summary(lm(x ~ sex + PRS_height + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"Estimate"][3]))
+ 
+
+#these are the adjusted p-values i should use
+cnb.pvalues_gaPRS_BH.plot <- as.data.frame(t(p.adjust(fit_cnb_gaPRS_pval,method="BH")))
+rownames(cnb.pvalues_gaPRS_BH.plot) <- "cnb.pvalues_gaPRS_BH"
+
+cnb.pvalues_bwPRS_BH.plot <- as.data.frame(t(p.adjust(fit_cnb_bwPRS_pval,method="BH")))
+rownames(cnb.pvalues_bwPRS_BH.plot) <- "cnb.pvalues_bwPRS_BH"
+cnb.pvalues_PRS_BIP_BH.plot <- as.data.frame(t(p.adjust(fit_cnb_PRS_BIP_pval,method="BH")))
+rownames(cnb.pvalues_PRS_BIP_BH.plot) <- "cnb.pvalues_PRS_BIP_BH"
+cnb.pvalues_PRS_MDD_BH.plot <- as.data.frame(t(p.adjust(fit_cnb_PRS_MDD_pval,method="BH")))
+rownames(cnb.pvalues_PRS_MDD_BH.plot) <- "cnb.pvalues_PRS_MDD_BH"
+cnb.pvalues_PRS_PTSD_BH.plot <- as.data.frame(t(p.adjust(fit_cnb_PRS_PTSD_pval,method="BH")))
+rownames(cnb.pvalues_PRS_PTSD_BH.plot) <- "cnb.pvalues_PRS_PTSD_BH"
+cnb.pvalues_PRS_SCZ_BH.plot <- as.data.frame(t(p.adjust(fit_cnb_PRS_SCZ_pval,method="BH")))
+rownames(cnb.pvalues_PRS_SCZ_BH.plot) <- "cnb.pvalues_PRS_SCZ_BH"
+cnb.pvalues_PRS_AD_BH.plot <- as.data.frame(t(p.adjust(fit_cnb_PRS_AD_pval,method="BH")))
+rownames(cnb.pvalues_PRS_AD_BH.plot) <- "cnb.pvalues_PRS_AD_BH"
+cnb.pvalues_PRS_ASD_BH.plot <- as.data.frame(t(p.adjust(fit_cnb_PRS_ASD_pval,method="BH")))
+rownames(cnb.pvalues_PRS_ASD_BH.plot) <- "cnb.pvalues_PRS_ASD_BH"
+cnb.pvalues_PRS_IQ_BH.plot <- as.data.frame(t(p.adjust(fit_cnb_PRS_IQ_pval,method="BH")))
+rownames(cnb.pvalues_PRS_IQ_BH.plot) <- "cnb.pvalues_PRS_IQ_BH"
+cnb.pvalues_PRS_height_BH.plot <- as.data.frame(t(p.adjust(fit_cnb_PRS_height_pval,method="BH")))
+rownames(cnb.pvalues_PRS_height_BH.plot) <- "cnb.pvalues_PRS_height_BH"
+```
+ 
+
+
+###CNB 
+#make ggplot heatmap of beta values (PRS predicting cnb)
+##step 2: get the common cnb factors that were significant across PRS
+```{r}
+
+#get the common clinical variables that were significant across PRS
+cnb.sig_PRS <- unique(c(names(cnb.pvalues_PRS_BIP_BH.plot[which(cnb.pvalues_PRS_BIP_BH.plot < 0.05)]), names(cnb.pvalues_PRS_MDD_BH.plot[which(cnb.pvalues_PRS_MDD_BH.plot < 0.05)]), names(cnb.pvalues_PRS_PTSD_BH.plot[which(cnb.pvalues_PRS_PTSD_BH.plot < 0.05)]), names(cnb.pvalues_PRS_SCZ_BH.plot[which(cnb.pvalues_PRS_SCZ_BH.plot < 0.05)]), names(cnb.pvalues_PRS_AD_BH.plot[which(cnb.pvalues_PRS_AD_BH.plot < 0.05)]),names(cnb.pvalues_PRS_height_BH.plot[which(cnb.pvalues_PRS_height_BH.plot < 0.05)]), names(cnb.pvalues_gaPRS_BH.plot[which(cnb.pvalues_gaPRS_BH.plot < 0.05)]), names(cnb.pvalues_bwPRS_BH.plot[which(cnb.pvalues_bwPRS_BH.plot < 0.05)]),names(cnb.pvalues_PRS_ASD_BH.plot[which(cnb.pvalues_PRS_ASD_BH.plot < 0.05)]),names(cnb.pvalues_PRS_IQ_BH.plot[which(cnb.pvalues_PRS_IQ_BH.plot < 0.05)])))
+ 
+ 
+PRScnb.plot_temp <- rbind(gaPRS_beta_cnb, bwPRS_beta_cnb, PRS_BIP_beta_cnb, PRS_MDD_beta_cnb, PRS_PTSD_beta_cnb, PRS_SCZ_beta_cnb, PRS_AD_beta_cnb, PRS_ASD_beta_cnb, PRS_IQ_beta_cnb, PRS_height_beta_cnb) 
+PRScnb.plot_temp <- PRScnb.plot_temp %>% mutate(PRS = rownames(PRScnb.plot_temp))
+
+library(reshape2) 
+PRScnb.plot_temp2 <-  PRScnb.plot_temp[(names(PRScnb.plot_temp) %in% cnb.sig_PRS)]
+PRScnb.plot_temp2<- PRScnb.plot_temp2 %>% mutate(PRS = rownames(PRScnb.plot_temp2))
+PRScnb.plot <- melt(PRScnb.plot_temp2) 
+
+pvalcnb.plot_temp <- rbind(cnb.pvalues_gaPRS_BH.plot, cnb.pvalues_bwPRS_BH.plot, cnb.pvalues_PRS_BIP_BH.plot, cnb.pvalues_PRS_MDD_BH.plot, cnb.pvalues_PRS_PTSD_BH.plot, cnb.pvalues_PRS_SCZ_BH.plot, cnb.pvalues_PRS_AD_BH.plot, cnb.pvalues_PRS_ASD_BH.plot, cnb.pvalues_PRS_IQ_BH.plot, cnb.pvalues_PRS_height_BH.plot)
+ 
+PRSpval_cnb.plot <-  pvalcnb.plot_temp[(names(pvalcnb.plot_temp) %in% cnb.sig_PRS)] 
+``` 
+ 
+ 
+###CNB 
+plot heatmap and geompoint figures for beta values (prs vs. cnb factors)
+```{r}
+#heatmap of beta values (of PRS vs. cnb factor)  
+#heatmap.plot_beta_cnb <- ggplot(data = PRScnb.plot , aes(x = PRS, y = variable)) +
+  #geom_tile(aes(fill = value), color = "black") + labs(fill = "beta value") + 
+ # scale_fill_gradientn(colors = hcl.colors(20, "BrBG")) +
+ # theme(axis.text.y = element_text(size = 6), axis.text.x = element_text(angle=45, hjust = 1))
+
+#pdf("prs_heatmap_beta.pdf")
+#print(heatmap.plot_beta)
+#dev.off()
+
+
+#add column for significance in dataframe...
+PRSpval_cnb.plot <- PRSpval_cnb.plot %>% mutate(PRS = PRScnb.plot$PRS[1:10])
+PRSpval_cnb.plot <- melt(PRSpval_cnb.plot) 
+identical(PRScnb.plot$PRS, PRSpval_cnb.plot$PRS) # excellent :D 
+identical(PRScnb.plot$variable, PRSpval_cnb.plot$variable) # excellent :D 
+
+colnames(PRSpval_cnb.plot)[3] <-"adjusted_p.value"
+PRScnb.plot_with_pval <- PRScnb.plot %>% mutate(adjusted_p.value = PRSpval_cnb.plot$adjusted_p.value, significance = ifelse(PRSpval_cnb.plot$adjusted_p.value < 0.05, "sig", "insig")) # double check betas and pvalues
+
+length(PRScnb.plot$PRS)
+#try geom_point
+geompoint.plot_beta_cnb <- (ggplot(data = PRScnb.plot_with_pval , aes(x = PRS, y = variable, shape=significance)) +
+  geom_point(aes(size=abs(value), color = value<0)) + labs(size = "magnitude of beta value") + scale_shape_manual(values = c(1, 16)) + 
+  theme_minimal()+  coord_fixed(ratio=.7) +
+  theme(axis.text.y = element_text(size = 6), axis.text.x = element_text(angle=45, hjust = 1)))
+
+ggsave(geompoint.plot_beta_cnb, file="prs_beta_cnb.pdf", dpi=300)
+
+ 
+ 
+```
+
+###CNB
+#make heatmap of t-values (of cnb factors)
+# step 1: extract t values
+```{r}
+#extract t-values and make heatmap of t-vals
+# make dataframe of each PRS and each GOASSESS/clinical variable tval from lm 
+gaPRS_tval.cnb <- as.data.frame(lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + ga_PRS_std + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"t value"][3]))
+ 
+bwPRS_tval.cnb <- as.data.frame(lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + bw_PRS_std + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"t value"][3]))
+
+PRS_BIP_tval.cnb <- as.data.frame(lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_BIP + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"t value"][3]))
+ 
+PRS_MDD_tval.cnb <- as.data.frame(lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_MDD + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"t value"][3]))
+
+PRS_PTSD_tval.cnb <- as.data.frame(lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_PTSD + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"t value"][3]))
+
+PRS_SCZ_tval.cnb <- as.data.frame(lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_SCZ + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"t value"][3]))
+
+PRS_AD_tval.cnb <- as.data.frame(lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_AD + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"t value"][3]))
+
+PRS_ASD_tval.cnb <- as.data.frame(lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_ASD + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"t value"][3]))
+
+PRS_IQ_tval.cnb <- as.data.frame(lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_IQ + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"t value"][3]))
+
+PRS_height_tval.cnb <- as.data.frame(lapply(temp_cnb[,29:84], function(x) summary(lm(x ~ sex + PRS_height + age_cnb + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=temp_cnb))$coefficients[,"t value"][3]))
+
+
+PRScnb.plot_temp_tval <- rbind(gaPRS_tval.cnb, bwPRS_tval.cnb, PRS_BIP_tval.cnb, PRS_MDD_tval.cnb, PRS_PTSD_tval.cnb, PRS_SCZ_tval.cnb, PRS_AD_tval.cnb, PRS_ASD_tval.cnb, PRS_IQ_tval.cnb, PRS_height_tval.cnb) 
+PRScnb.plot_temp_tval <- PRScnb.plot_temp_tval %>% mutate(PRS = rownames(PRScnb.plot_temp_tval))
+
+################
+library(reshape2) 
+PRS.plot_temp_tval <-  PRS.plot_temp_tval[(names(PRS.plot_temp_tval) %in% sig_PRS)]
+PRS.plot_temp_tval<- PRS.plot_temp_tval %>% mutate(PRS = rownames(PRS.plot_temp_tval))
+PRS.plot_tval <- melt(PRS.plot_temp_tval) 
+
+
+#add column for significance in dataframe...
+identical(PRS.plot_tval$PRS, PRSpval.plot$PRS) # excellent :D 
+identical(PRS.plot_tval$variable, PRSpval.plot$variable) # excellent :D 
+PRS.plot_tval_pval <- PRS.plot_tval %>% mutate(adjusted_p.value = PRSpval.plot$adjusted_p.value, significance = ifelse(PRSpval.plot$adjusted_p.value < 0.05, "sig", "insig")) # double check betas and pvalues
+
+```
+
+
+
+########################################## 
+############### imaging ################## 
+########################################## 
+
+- From Jakob: This is from /project/pnc_genomics/data/neuroimaging/t1struc on PMACS. I’d take a look at the columns “CortexVol” “SubCortGrayVol” “CorticalWhiteMatterVol” to start. 
+- Also the difference between “BrainSegVol” and “BrainSegVolNotVent” will give the estimate of Ventricular CSF. 
+- Then, those four phenotypes are the same as those that we focused on in our lifespan paper. I think that’s a good place to start for now.
+
+```{r}
+names(summary_df_PRSclinical)
+AsegVol <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/n1601_freesurferAsegVol_20180828.csv")
+CortThickness <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/n1601_freesurferCt_20180213.csv")
+SurfaceArea <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/n1601_freesurferSurfaceArea_20180828.csv")
+CorticalVol <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/n1601_freesurferVol_20180828.csv")
+
+imaging_qa <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/n1601_t1QaData_20170306.csv") 
+
+head(imaging_qa)
+#order AsegVol with clinical dataframe
+length(intersect(CorticalVol$HBID, summary_df_PRSclinical$HBID)) #702 overlapping folks between those who have imaging in the PNC and PRS/clinical data
+
+AsegVol_ordered <- AsegVol[match(summary_df_PRSclinical$HBID, AsegVol$HBID),]
+CortThickness_ordered <- CortThickness[match(summary_df_PRSclinical$HBID, CortThickness$HBID),]
+SurfaceArea_ordered <- SurfaceArea[match(summary_df_PRSclinical$HBID, SurfaceArea$HBID),]
+CorticalVol_ordered <- CorticalVol[match(summary_df_PRSclinical$HBID, CorticalVol$HBID),]
+imaging_qa_ordered <- imaging_qa[match(summary_df_PRSclinical$HBID, imaging_qa$HBID),]
+  
+#difference between “BrainSegVol” and “BrainSegVolNotVent” will give the estimate of Ventricular CSF. 
+AsegVol_ordered <- AsegVol_ordered %>% mutate(Ventricular_CSF = BrainSegVol - BrainSegVolNotVent)
+names(AsegVol_ordered)
+dim(AsegVol_ordered)
+
+
+colnames(AsegVol_ordered) <- paste("AsegVol", colnames(AsegVol_ordered), sep = "_")
+  
+names(CortThickness_ordered) <- gsub(x = names(CortThickness_ordered), pattern = "L_", replacement = "lh_CT_")  
+names(CortThickness_ordered) <- gsub(x = names(CortThickness_ordered), pattern = "R_", replacement = "rh_CT_") 
+names(CortThickness_ordered) <- gsub(x = names(CortThickness_ordered), pattern = "_thickavg", replacement = "") 
+colnames(SurfaceArea_ordered) <- gsub(x = names(SurfaceArea_ordered), pattern = "lh_", replacement = "lh_SA_") 
+colnames(SurfaceArea_ordered) <- gsub(x = names(SurfaceArea_ordered), pattern = "rh_", replacement = "rh_SA_") 
+colnames(SurfaceArea_ordered) <- gsub(x = names(SurfaceArea_ordered), pattern = "_area", replacement = "") 
+colnames(CorticalVol_ordered) <- gsub(x = names(CorticalVol_ordered), pattern = "lh_", replacement = "lh_Vol_") 
+colnames(CorticalVol_ordered) <- gsub(x = names(CorticalVol_ordered), pattern = "rh_", replacement = "rh_Vol_") 
+colnames(CorticalVol_ordered) <- gsub(x = names(CorticalVol_ordered), pattern = "_volume", replacement = "") 
+#calculate sums of left and right hemisphere
+### AsegVol
+AsegVol_ordered <- AsegVol_ordered %>% mutate(AsegVol_CaudateTotal = AsegVol_Left.Caudate + AsegVol_Right.Caudate, AsegVol_PutamenTotal = AsegVol_Left.Putamen + AsegVol_Right.Putamen, AsegVol_PallidumTotal = AsegVol_Left.Pallidum + AsegVol_Right.Pallidum, AsegVol_HippocamTotal = AsegVol_Left.Hippocampus + AsegVol_Right.Hippocampus, AsegVol_AmygdalaTotal = AsegVol_Left.Amygdala + AsegVol_Right.Amygdala,  AsegVol_AccumbensTotal = AsegVol_Left.Accumbens.area + AsegVol_Right.Accumbens.area)
+
+### CortThickness
+lh_CT <- names(CortThickness_ordered)[2:35]
+rh_CT <- names(CortThickness_ordered)[36:69]
+dim(CortThickness_ordered)
+CT_total <- data.frame(matrix(NA, nrow = 5239, ncol = length(lh_CT)))
+
+for (i in 1:length(lh_CT))
+{ 
+  a <- which(names(CortThickness_ordered) == lh_CT[i])
+  b <- which(names(CortThickness_ordered) == rh_CT[i])
+  CT_total[,i] <- CortThickness_ordered[,a] + CortThickness_ordered[,b]
+  column_name <-  gsub(x = lh_CT[i], pattern = "lh_", replacement = "")
+  names(CT_total)[i] <- column_name
+}
+   
+#CortThickness_1 <- CortThickness_ordered %>% mutate(frontalpole = rh_CT_frontalpole + lh_CT_frontalpole)
+#identical(CortThickness_1$frontalpole, CT_total[,31])
+CortThickness_ordered <- as.data.frame(cbind(CortThickness_ordered, CT_total))
+names(CortThickness_ordered)
+
+### SurfaceArea
+lh_SA <- names(SurfaceArea_ordered)[3:37]
+rh_SA <- names(SurfaceArea_ordered)[38:72]
+SA_total <- data.frame(matrix(NA, nrow = 5239, ncol = length(lh_SA)))
+
+for (i in 1:length(lh_SA))
+{ 
+  a <- which(names(SurfaceArea_ordered) == lh_SA[i])
+  b <- which(names(SurfaceArea_ordered) == rh_SA[i])
+  SA_total[,i] <- SurfaceArea_ordered[,a] + SurfaceArea_ordered[,b]
+  column_name <-  gsub(x = lh_SA[i], pattern = "lh_", replacement = "")
+  names(SA_total)[i] <- column_name
+}
+   
+#SurfaceArea_1 <- SurfaceArea_ordered %>% mutate(frontalpole = rh_SA_frontalpole + lh_SA_frontalpole)
+#identical(SurfaceArea_1$frontalpole, SA_total[,31])
+SurfaceArea_ordered <- as.data.frame(cbind(SurfaceArea_ordered, SA_total))
+names(SurfaceArea_ordered)
+ 
+### CorticalVol
+lh_Vol <- names(CorticalVol_ordered)[3:36]
+rh_Vol <- names(CorticalVol_ordered)[37:70]
+cbind(lh_Vol, rh_Vol)
+Vol_total <- data.frame(matrix(NA, nrow = 5239, ncol = length(lh_Vol)))
+
+for (i in 1:length(lh_Vol))
+{ 
+  a <- which(names(CorticalVol_ordered) == lh_Vol[i])
+  b <- which(names(CorticalVol_ordered) == rh_Vol[i])
+  Vol_total[,i] <- CorticalVol_ordered[,a] + CorticalVol_ordered[,b]
+  column_name <-  gsub(x = lh_Vol[i], pattern = "lh_", replacement = "")
+  names(Vol_total)[i] <- column_name
+}
+   
+CorticalVol_1 <- CorticalVol_ordered %>% mutate(frontalpole = rh_Vol_frontalpole + lh_Vol_frontalpole)
+identical(CorticalVol_1$frontalpole, Vol_total[,31])
+CorticalVol_ordered <- as.data.frame(cbind(CorticalVol_ordered, Vol_total))
+   
+#combine imaging data with summary_df_PRSclinical
+names(summary_df_PRSclinical)
+imaging_PRS_clinical <- as.data.frame(cbind(summary_df_PRSclinical, AsegVol_ordered[,c(3:75)], CortThickness_ordered[,c(2:108)], SurfaceArea_ordered[,c(3:107)], CorticalVol_ordered[,c(3:104)], imaging_qa_ordered))
+cbind(AsegVol_ordered$AsegVol_HBID, summary_df_PRSclinical$HBID) # ok  
+
+names(CorticalVol_ordered)
+ 
+which(names(imaging_PRS_clinical) == "AsegVol_CortexVol") # 112
+which(names(imaging_PRS_clinical) == "AsegVol_SubCortGrayVol") # 116
+which(names(imaging_PRS_clinical) == "AsegVol_CorticalWhiteMatterVol") # 115
+which(names(imaging_PRS_clinical) == "AsegVol_Ventricular_CSF") # 128
+ 
+
+
+#write.csv(imaging_PRS_clinical, "09292021_imaging_PRS_clinical.csv")
+write.csv(imaging_PRS_clinical, "10042021_pnc.csv")
+#names(imaging_PRS_clinical)
+ 
+  
+```
+
+
+make ga_PRS into a binary for aSPU
+##### what cutoff? #####
+```{r}
+ 
+# make columns preterm and full_term and 'melt' the ga_PRS data
+term_temp <- ifelse(is.na(imaging_PRS_clinical$term_statusBINARY) == TRUE, "no_data", ifelse(imaging_PRS_clinical$term_statusBINARY == "full_term", "full_term", ifelse(imaging_PRS_clinical$term_statusBINARY == "preterm", "preterm", 0)))
+ 
+identical(which(term_temp == "no_data"), which(is.na(imaging_PRS_clinical$term_statusBINARY))) #nice
+
+imaging_PRS_clinical$full_termPRS <- NA
+imaging_PRS_clinical$pretermPRS <- NA
+for (i in 1:nrow(imaging_PRS_clinical))
+{
+if(term_temp[i] == "full_term") { 
+n <- imaging_PRS_clinical$ga_PRS_inverse[i]
+imaging_PRS_clinical$full_termPRS[i] <- n
+} else if(term_temp[i] == "preterm"){
+m <- imaging_PRS_clinical$ga_PRS_inverse[i]
+imaging_PRS_clinical$pretermPRS[i] <- m
+}
+}
+#as.data.frame(cbind(as.character(imaging_PRS_clinical$term_statusBINARY), imaging_PRS_clinical$full_termPRS, as.character(imaging_PRS_clinical$pretermPRS)))
+ 
+
+# t-test
+shapiro.test(imaging_PRS_clinical$full_termPRS) #welp, not normally distributed
+wilcox.test(imaging_PRS_clinical$pretermPRS[which(imaging_PRS_clinical$pretermPRS > 0.1650947)], imaging_PRS_clinical$full_termPRS[which(imaging_PRS_clinical$full_termPRS < -0.04326121)],  na.action=na.omit) #nonparametric t test
+ 
+
+# calculate means of ga_PRS for preterm and full_term
+median(imaging_PRS_clinical$pretermPRS, na.rm=TRUE)
+median(imaging_PRS_clinical$full_termPRS, na.rm=TRUE)
+ 
+length(which(imaging_PRS_clinical$pretermPRS > 0.1650947))
+length(which(imaging_PRS_clinical$full_termPRS < -0.04326121))
+ 
+
+```
+
+
+can start here with imaging data
+- do ga_PRS and bw_PRS predict brain volumes? 
+- do gestational age and birthweight predict brain volumes
+```{r}
+
+#imaging_PRS_clinical <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/scripts/09292021_imaging_PRS_clinical.csv")
+ 
+imaging_PRS_clinical  <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/scripts/10042021_imaging_PRS_clinical.csv")
+
+#cbind(names(imaging_PRS_clinical), names(imaging_PRS_clinical2))
+
+# exclude t1exclude == 1
+exclude <- which(imaging_PRS_clinical$t1Exclude == 1)
+imaging_cleaned <- imaging_PRS_clinical[-exclude,]
+length(imaging_cleaned$t1Exclude)
+
+rm <- which(names(imaging_cleaned) == "X")
+imaging_cleaned <- imaging_cleaned[,-rm]
+names(imaging_cleaned)
+```
+
+
+# brain volumes I'm interested in: 
+-AsegVol_CortexVol, Total cortical gray matter volume
+- SubCortGrayVol, Subcortical gray matter volume
+- CerebralWhiteMatterVol, Total cerebral white matter volume ? 
+- Left.Caudate, Left.Putamen, Left.Pallidum, Left.Hippocampus, Left.Amygdala, Left.Accumbens.area
+- Right.Caudate, Right.Putamen, Right.Pallidum, Right.Hippocampus, Right.Amygdala, Right.Accumbens.area     
+- Ventricular_CSF
+- CorticalWhiteMatterVol
+```{r}
+
+#do ga_PRS and bw_PRS predict the following brain volumes? 
+#CortexVol
+#SubCortGrayVol
+#CorticalWhiteMatterVol
+#Ventricular_CSF
+vol_i <-  which(grepl("AsegVol_CortexVol", colnames(imaging_cleaned)))
+vol_i <- append(vol_i, which(grepl("AsegVol_SubCortGrayVol", colnames(imaging_cleaned))))
+vol_i <- append(vol_i, which(grepl("AsegVol_CorticalWhiteMatterVol", colnames(imaging_cleaned))))
+vol_i <- append(vol_i, which(grepl("AsegVol_Ventricular_CSF", colnames(imaging_cleaned))))
+
+              
+fit_gaPRS_imaging4 <- lapply(imaging_cleaned[,vol_i], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + averageManualRating  + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned)))  
+fit_gaPRS_imaging4_pval <- lapply(imaging_cleaned[,vol_i], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + averageManualRating + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Pr(>|t|)"][3])  
+fit_gaPRS_imaging4_sigoutcomes <- which(fit_gaPRS_imaging4_pval < 0.05) 
+fit_gaPRS_imaging4[fit_gaPRS_imaging4_sigoutcomes]  
+which(p.adjust(fit_gaPRS_imaging4_pval, method="BY") < 0.05)
+ 
+fit_bwPRS_imaging4 <- lapply(imaging_cleaned[,vol_i], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + averageManualRating + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned)))  
+fit_bwPRS_imaging4_pval <- lapply(imaging_cleaned[,vol_i], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + averageManualRating + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles +PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Pr(>|t|)"][3])  
+fit_bwPRS_imaging4_sigoutcomes <- which(fit_bwPRS_imaging4_pval < 0.05) 
+fit_bwPRS_imaging4[fit_bwPRS_imaging4_sigoutcomes]  
+which(p.adjust(fit_bwPRS_imaging4_pval, method="BY") < 0.05)
+  
+
+ 
+# do ga_PRS and bw_PRS predict brain volumes? redo this with just the regions of interest / summed volumes
+vol_i2 <-  which(grepl("AsegVol_CaudateTotal", colnames(imaging_cleaned)))
+vol_i2 <- append(vol_i2, which(grepl("AsegVol_PutamenTotal", colnames(imaging_cleaned))))
+vol_i2 <- append(vol_i2, which(grepl("AsegVol_PallidumTotal", colnames(imaging_cleaned))))
+vol_i2 <- append(vol_i2, which(grepl("AsegVol_HippocamTotal", colnames(imaging_cleaned))))
+vol_i2 <- append(vol_i2, which(grepl("AsegVol_AmygdalaTotal", colnames(imaging_cleaned))))
+vol_i2 <- append(vol_i2, which(grepl("AsegVol_AccumbensTotal", colnames(imaging_cleaned))))
+
+names(imaging_cleaned)
+
+fit_gaPRS_imaging <- lapply(imaging_cleaned[,c(vol_i, vol_i2)], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + averageManualRating + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles +   + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned)))  
+fit_gaPRS_imaging_pval <- lapply(imaging_cleaned[,c(vol_i, vol_i2)], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + averageManualRating + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles +   + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Pr(>|t|)"][3])  
+fit_gaPRS_imaging_sigoutcomes <- which(fit_gaPRS_imaging_pval < 0.05) 
+fit_gaPRS_imaging[fit_gaPRS_imaging_sigoutcomes]  
+which(p.adjust(fit_gaPRS_imaging_pval, method="BH") < 0.05)
+  
+fit_bwPRS_imaging <- lapply(imaging_cleaned[,c(vol_i, vol_i2)], function(x) lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + averageManualRating + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))
+fit_bwPRS_imaging_pval <- lapply(imaging_cleaned[,c(vol_i, vol_i2)], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + averageManualRating + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Pr(>|t|)"][3])  
+fit_bwPRS_imaging_sigoutcomes <- which(fit_bwPRS_imaging_pval < 0.05)  
+fit_bwPRS_imaging_pval[fit_bwPRS_imaging_sigoutcomes]
+which(p.adjust(fit_bwPRS_imaging_pval,method="BH") < 0.05) #doesn't survive
+
+
+
+#do gestational age and birthweight predict brain volumes? 
+fit_gest_age_imaging <- lapply(imaging_cleaned[,c(vol_i, vol_i2)], function(x) summary(lm(x ~ sex + gest_age + ageAtClinicalAssess1 + averageManualRating + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles +PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned)))  
+fit_gest_age_imaging_pval <- lapply(imaging_cleaned[,c(vol_i, vol_i2)], function(x) summary(lm(x ~ sex + gest_age + ageAtClinicalAssess1 + averageManualRating + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Pr(>|t|)"][3])  
+fit_gest_age_imaging_sigoutcomes <- which(fit_gest_age_imaging_pval < 0.05) 
+fit_gest_age_imaging[fit_gest_age_imaging_sigoutcomes]  
+which(p.adjust(fit_gest_age_imaging_pval, method="BH") < 0.05) #accumbens doesn't survive
+  
+fit_birthwt_imaging <- lapply(imaging_cleaned[,c(vol_i, vol_i2)], function(x) lm(x ~ sex + birthwt_kg + ageAtClinicalAssess1 + averageManualRating + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles +   +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))
+fit_birthwt_imaging_pval <- lapply(imaging_cleaned[,c(vol_i, vol_i2)], function(x) summary(lm(x ~ sex + birthwt_kg + ageAtClinicalAssess1 + averageManualRating + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles +   +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Pr(>|t|)"][3])  
+fit_birthwt_imaging_sigoutcomes <- which(fit_birthwt_imaging_pval < 0.05)  
+fit_birthwt_imaging_pval[fit_birthwt_imaging_sigoutcomes]
+ 
+which(p.adjust(fit_birthwt_imaging_pval,method="BH") < 0.05) #AsegVol_CortexVol, AsegVol_PallidumTotal,  AsegVol_AccumbensTotal 
+ 
+```
+
+ 
+GOASSESS and imaging
+-  We’d want to verify the link between GOASSESS and imaging, and then we could start unpacking these potentially complementary signals. 
+```{r}
+  
+#outcome measures: goassess
+# predictors:AsegVol_CortexVol, SubCortGrayVol, CorticalWhiteMatterVo, Ventricular_CSF
+names(imaging_cleaned)
+fit_CortexVol <- lapply(imaging_cleaned[,33:59], function(x) lm(x ~ sex +AsegVol_CortexVol + ageAtClinicalAssess1 + averageManualRating + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))
+fit_CortexVol_pval <- lapply(imaging_cleaned[,33:59], function(x) summary(lm(x ~ sex +AsegVol_CortexVol + ageAtClinicalAssess1 + averageManualRating +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Pr(>|t|)"][3])  
+fit_CortexVol_sigoutcomes <- which(fit_CortexVol_pval < 0.05)  
+fit_CortexVol[fit_CortexVol_sigoutcomes]
+fit_CortexVol_pval_adj <- which(p.adjust(fit_CortexVol_pval, method="BH") < 0.05)
+fit_CortexVol_betas <- lapply(imaging_cleaned[,33:59], function(x) summary(lm(x ~ sex +AsegVol_CortexVol + ageAtClinicalAssess1 + averageManualRating + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Estimate"][3])  
+
+CortexVol_GOASSESS <-  cbind(fit_CortexVol_betas[fit_CortexVol_pval_adj], fit_CortexVol_pval[fit_CortexVol_pval_adj])
+ 
+fit_SubCortGrayVol <- lapply(imaging_cleaned[,33:59], function(x) lm(x ~ sex + SubCortGrayVol + ageAtClinicalAssess1 + averageManualRating +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))
+fit_SubCortGrayVol_pval <- lapply(imaging_cleaned[,33:59], function(x) summary(lm(x ~ sex + SubCortGrayVol + ageAtClinicalAssess1 + averageManualRating +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Pr(>|t|)"][3])  
+fit_SubCortGrayVol_sigoutcomes <- which(fit_SubCortGrayVol_pval < 0.05)  
+fit_SubCortGrayVol[fit_SubCortGrayVol_sigoutcomes]
+fit_SubCortGrayVol_pval[fit_SubCortGrayVol_sigoutcomes]
+which(p.adjust(fit_SubCortGrayVol_pval, method="BH") < 0.05)
+ 
+ 
+fit_CorticalWhiteMatterVol <- lapply(imaging_cleaned[,33:59], function(x) lm(x ~ sex + CorticalWhiteMatterVol + ageAtClinicalAssess1 + averageManualRating +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))
+fit_CorticalWhiteMatterVol_pval <- lapply(imaging_cleaned[,33:59], function(x) summary(lm(x ~ sex + CorticalWhiteMatterVol + ageAtClinicalAssess1 + averageManualRating +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Pr(>|t|)"][3])  
+fit_CorticalWhiteMatterVol_sigoutcomes <- which(fit_CorticalWhiteMatterVol_pval < 0.05)  
+fit_CorticalWhiteMatterVol[fit_CorticalWhiteMatterVol_sigoutcomes]
+fit_CorticalWhiteMatterVol_pval[fit_CorticalWhiteMatterVol_sigoutcomes]
+which(p.adjust(fit_CorticalWhiteMatterVol_pval, method="BH") < 0.05)
+
+
+fit_Ventricular_CSF <- lapply(imaging_cleaned[,33:59], function(x) lm(x ~ sex + Ventricular_CSF + ageAtClinicalAssess1 + averageManualRating +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))
+fit_Ventricular_CSF_pval <- lapply(imaging_cleaned[,33:59], function(x) summary(lm(x ~ sex + Ventricular_CSF + ageAtClinicalAssess1 + averageManualRating +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Pr(>|t|)"][3])  
+fit_Ventricular_CSF_sigoutcomes <- which(fit_Ventricular_CSF_pval < 0.05)  
+fit_Ventricular_CSF_pval[fit_Ventricular_CSF_sigoutcomes]
+which(p.adjust(fit_Ventricular_CSF_pval, method="BH") < 0.05)
+  
+# summary(lm(ageAtClinicalAssess1 ~ sex + ga_PRS_inverse + bw_PRS_std+ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))
+# prs should be fixed effect
+# adolescent brain development - prs might be capturing some age effect. 
+# effect size is small though :) 
+ 
+``` 
+
+ 
+Create sums for both hemispheres for all imaging phenotypes eep 
+```{r}
+names(imaging_cleaned)
+imaging_cleaned <- imaging_cleaned %>% mutate(AsegVol_CaudateTotal = AsegVol_Left.Caudate + AsegVol_Right.Caudate, AsegVol_PutamenTotal = AsegVol_Left.Putamen + AsegVol_Right.Putamen, AsegVol_PallidumTotal = AsegVol_Left.Pallidum + AsegVol_Right.Pallidum, AsegVol_HippocamTotal = AsegVol_Left.Hippocampus + AsegVol_Right.Hippocampus, AsegVol_AmygdalaTotal = AsegVol_Left.Amygdala + AsegVol_Right.Amygdala,  AsegVol_AccumbensTotal = AsegVol_Left.Accumbens.area + AsegVol_Right.Accumbens.area)
+#between cols 131 and 202 is cortical thickness
+which(grepl("caudalant", names(imaging_cleaned)[131:202]))
+which(grepl("caudalmiddle", names(imaging_cleaned)[131:202]))
+
+which(grepl("Lateral\\.Ventricle", names(imaging_cleaned)))
+names(imaging_cleaned)[c(64, 82)]
+
+ 
+```
+ 
+ 
+# linear models of PRS and imaging (for pnc) -- for figure 
+```{r}
+# gaPRS for PNC            
+d <- which(grepl("SurfaceHoles", colnames(imaging_PRS_clinical)))
+pnc_imag <- as.data.frame(imaging_PRS_clinical[,-d])
+a <-  which(grepl("AsegVol_Left.Lateral.Ventricle", colnames(pnc_imag)))
+b <-  which( colnames(pnc_imag) == "Vol_insula")
+
+pnc_imag <-as.data.frame(pnc_imag[,c(a:b)])
+pnc_imag_gaPRS <- data.frame(matrix(NA, nrow = 384, ncol = 4))
+names(pnc_imag_gaPRS) <- c("Value", "Std.Error", " t-value", "p-value")
+list_var <- c() 
+for (i in 1:length(pnc_imag)) { 
+  variable <- pnc_imag[,i]
+  lm_pnc <- lm(variable ~  sex + ga_PRS_inverse + ageAtClinicalAssess1 + averageManualRating + AsegVol_SurfaceHoles + envSES + Cummulative_Stress_Load_No_Rape + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical)
+  pnc_imag_gaPRS[i, ] <- summary(lm_pnc)$coefficients[3,]
+  list_var[i] <- names(pnc_imag)[i]
+}
+
+pnc_imag_gaPRS <- cbind(list_var, pnc_imag_gaPRS) 
+pnc_imag_gaPRS$list_var[which(pnc_imag_gaPRS$`p-value` < 0.05)]
+which(p.adjust(pnc_imag_gaPRS$`p-value`, method="BY") < 0.05) # no gaPRS - imaging results
+  
+# bwPRS for PNC            
+d <- which(grepl("SurfaceHoles", colnames(imaging_PRS_clinical)))
+pnc_imag <- as.data.frame(imaging_PRS_clinical[,-d])
+a <-  which(grepl("AsegVol_Left.Lateral.Ventricle", colnames(pnc_imag)))
+b <-  which( colnames(pnc_imag) == "Vol_insula")
+
+pnc_imag <-as.data.frame(pnc_imag[,c(a:b)])
+pnc_imag_bwPRS <- data.frame(matrix(NA, nrow = 384, ncol = 4))
+names(pnc_imag_bwPRS) <- c("Value", "Std.Error", " t-value", "p-value")
+list_var <- c() 
+for (i in 1:length(pnc_imag)) { 
+  variable <- pnc_imag[,i]
+  lm_pnc <- lm(variable ~  sex + bw_PRS_std + ageAtClinicalAssess1 + averageManualRating + AsegVol_SurfaceHoles + envSES + Cummulative_Stress_Load_No_Rape + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical)
+  pnc_imag_bwPRS[i, ] <- summary(lm_pnc)$coefficients[3,]
+  list_var[i] <- names(pnc_imag)[i]
+}
+
+pnc_imag_bwPRS <- cbind(list_var, pnc_imag_bwPRS) 
+pnc_imag_bwPRS$list_var[which(pnc_imag_bwPRS$`p-value` < 0.05)]
+which(p.adjust(pnc_imag_bwPRS$`p-value`, method="BY") < 0.05) # no bwPRS - imaging results
+   
+``` 
+ 
+ 
+# figures for PRS predicting imaging
+```{r}
+library(ggseg)
+library(tidyverse)
+ggseg()
+```
+
+ 
+linear regression for loop with brain volumes as predictors and GOASSESS as outcome variables  
+- https://surfer.nmr.mgh.harvard.edu/fswiki/FsTutorial/AnatomicalROIV6.0 output from freesurfer
+
+```{r}
+# Creating pedictor and outcome vectors
+#dvs_vec <- names(imaging_cleaned[33:59]) # goassess
+dvs_vec <- names(imaging_cleaned[, c(vol_i, vol_i2, 131:340)]) #imaging phenotypes
+ivs_vec <- names(imaging_cleaned[8]) # 8 = bw PRS
+covariates <- c(" + sex + ageAtClinicalAssess1 + averageManualRating + AsegVol_lhSurfaceHoles + AsegVol_rhSurfaceHoles + AsegVol_SurfaceHoles + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10")
+#which(names(imaging_cleaned) == "BrainSegNVox")
+# Creating formulas and running the models
+ivs <- paste0(" ~ ", ivs_vec)
+dvs_ivs <- unlist(lapply(ivs, function(x) paste0(dvs_vec, x)))
+dvs_ivs_covs <- unlist(lapply(dvs_ivs, function(x) paste0(x, covariates)))
+formulas <- lapply(dvs_ivs_covs, formula)
+
+lm_results <- lapply(formulas, function(x) {
+  lm(x, data = imaging_cleaned)
+})
+
+lm_pval <- lapply(formulas, function(x) {
+  summary(lm(x, data = imaging_cleaned))$coefficients[,"Pr(>|t|)"][2]
+})
+
+lm_summaries <- lapply(formulas, function(x) {
+  summary(lm(x, data = imaging_cleaned)) })
+
+length(lm_summaries)
+#formulas[9]
+#lm_summaries[143]
+#lm_pval[923]
+#lm_summaries[65]  
+lm_sigoutcomes <- which(lm_pval < 0.05)
+lm_pval[lm_sigoutcomes]
+(lm_adj_sigoutcomes <- which(p.adjust(lm_pval, method = "BY") < 0.05))
+lm_pval[lm_adj_sigoutcomes]
+
+# need to differentiate which predictor variables
+summary(lm(GO1_Psychosis_NegativeDisorg ~ Left.Caudate + sex + ageAtClinicalAssess1 + 
+    PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned)) #-2.414e-04 is one that survives correction LOL
+
+
+```
+
+
+#consolidate hits from ga_PRS, bw_PRS predicting GOASSESS andAsegVol_CortexVol predicting GOASSESS
+- clinical variables thatAsegVol_CortexVol predicts
+- clinical variables that gaPRS and bwPRS predict
+
+```{r}
+#outcome measures: goassess
+# predictors:AsegVol_CortexVol (the only brain volume that predicts GOASSESS), ga_PRS_inverse, bw_PRS, gest_age, and birthwt_kg
+
+
+################### AsegVol_CortexVol
+names(imaging_cleaned[35:56])
+fit_CortexVol <- lapply(imaging_cleaned[,35:56], function(x) lm(x ~ sex +AsegVol_CortexVol + ageAtClinicalAssess1 + averageManualRating +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))
+fit_CortexVol_pval <- lapply(imaging_cleaned[,35:56], function(x) summary(lm(x ~ sex +AsegVol_CortexVol + ageAtClinicalAssess1 + averageManualRating +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Pr(>|t|)"][3])  
+fit_CortexVol_sigoutcomes <- which(fit_CortexVol_pval < 0.05)  
+fit_CortexVol[fit_CortexVol_sigoutcomes]
+(fit_CortexVol_pval_adj <- which(p.adjust(fit_CortexVol_pval, method="BH") < 0.05)) #none survive correction
+fit_CortexVol_betas <- lapply(imaging_cleaned[,35:56], function(x) summary(lm(x ~ sex +AsegVol_CortexVol + ageAtClinicalAssess1 + averageManualRating +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_cleaned))$coefficients[,"Estimate"][3])  
+
+CortexVol_GOASSESS <- cbind(fit_CortexVol_betas[fit_CortexVol_pval_adj], fit_CortexVol_pval[fit_CortexVol_pval_adj])
+
+###################  gaPRS
+fit_gaPRS <- lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical)))  
+fit_gaPRS_pval <- lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Pr(>|t|)"][3])   
+fit_gaPRS_sigoutcomes <- which(fit_gaPRS_pval < 0.05)  
+fit_gaPRS[fit_gaPRS_sigoutcomes]  
+fit_gaPRS_pval_adj <- which(p.adjust(fit_gaPRS_pval, method="BH") < 0.05)
+fit_gaPRS_betas <- lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3])  
+
+gaPRS_GOASSESS <- cbind(fit_gaPRS_betas[fit_gaPRS_pval_adj], fit_gaPRS_pval[fit_gaPRS_pval_adj])
+ 
+ 
+###################  bwPRS  
+fit_bwPRS <- lapply(imaging_PRS_clinical[,35:56], function(x) lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))
+fit_bwPRS_pval <- lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Pr(>|t|)"][3])  
+fit_bwPRS_sigoutcomes <- which(fit_bwPRS_pval < 0.05)  
+fit_bwPRS[fit_bwPRS_sigoutcomes]
+
+fit_bwPRS_pval_adj <- which(p.adjust(fit_bwPRS_pval, method="BH") < 0.05)
+fit_bwPRS_betas <- lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3])  
+
+bwPRS_GOASSESS <- cbind(fit_bwPRS_betas[fit_bwPRS_pval_adj], fit_bwPRS_pval[fit_bwPRS_pval_adj])
+
+###################  gest_age -- no results? that's weird
+fit_gest_age <- lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + gest_age + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical)))  
+fit_gest_age_pval <- lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + gest_age + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Pr(>|t|)"][3])   
+fit_gest_age_sigoutcomes <- which(fit_gest_age_pval < 0.05)  
+fit_gest_age[fit_gest_age_sigoutcomes]  
+fit_gest_age_pval_adj <- which(p.adjust(fit_gest_age_pval, method="BH") < 0.05)
+fit_gest_age_betas <- lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + gest_age + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3])  
+gest_age_GOASSESS <- cbind(fit_gest_age_betas[fit_gest_age_pval_adj], fit_gest_age_pval[fit_gest_age_pval_adj])
+
+###################  birthwt_kg -- no results? that's weird
+fit_birthwt_kg <- lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + birthwt_kg + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical)))  
+fit_birthwt_kg_pval <- lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + birthwt_kg + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Pr(>|t|)"][3])   
+fit_birthwt_kg_sigoutcomes <- which(fit_birthwt_kg_pval < 0.05)  
+fit_birthwt_kg_pval[fit_birthwt_kg_sigoutcomes]  
+fit_birthwt_kg_pval_adj <- which(p.adjust(fit_birthwt_kg_pval, method="BH") < 0.05)
+fit_birthwt_kg_betas <- lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + birthwt_kg + ageAtClinicalAssess1 +  PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3])  
+
+birthwt_kg_GOASSESS <- cbind(fit_birthwt_kg_betas[fit_birthwt_kg_pval_adj], fit_birthwt_kg_pval[fit_birthwt_kg_pval_adj])
+
+
+ 
+#corrtraits_externalizing_corrtraitsv2 significantly predicted by both gaPRS andAsegVol_CortexVol  
+  
+CortexVol_GOASSESS
+gaPRS_GOASSESS
+bwPRS_GOASSESS
+#birthwt_kg_GOASSESS
+#gest_age_GOASSESS
+ 
+```
+ 
+ 
+make a plot showing beta estimate and which goassess variables are predicted by each
+```{r}
+# make dataframe of each PRS and each GOASSESS/clinical variable beta coeff from lm, and adjusted pvalues
+CortexVol_GOASSESS_beta <- as.data.frame(lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex +AsegVol_CortexVol + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3]))
+
+gaPRS_GOASSESS_beta <- as.data.frame(lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3]))
+
+bwPRS_GOASSESS_beta <- as.data.frame(lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3]))
+
+gest_age_GOASSESS_beta <- as.data.frame(lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + gest_age + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3]))
+
+birthwt_kg_GOASSESS_beta <- as.data.frame(lapply(imaging_PRS_clinical[,35:56], function(x) summary(lm(x ~ sex + birthwt_kg + ageAtClinicalAssess1 + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3]))
+
+#these are the adjusted p-values i should use
+pvalues_CortexVol_GOASSESS_BH.plot <- as.data.frame(t(p.adjust(fit_CortexVol_pval,method="BH")))
+rownames(pvalues_CortexVol_GOASSESS_BH.plot) <- "pvalues_CortexVol_GOASSESS_BH"
+
+pvalues_gaPRS_GOASSESS_BH.plot <- as.data.frame(t(p.adjust(fit_gaPRS_pval,method="BH")))
+rownames(pvalues_gaPRS_GOASSESS_BH.plot) <- "pvalues_gaPRS_GOASSESS_BH"
+
+pvalues_bwPRS_GOASSESS_BH.plot <- as.data.frame(t(p.adjust(fit_bwPRS_pval,method="BH")))
+rownames(pvalues_bwPRS_GOASSESS_BH.plot) <- "pvalues_bwPRS_GOASSESS_BH"
+
+pvalues_gest_age_GOASSESS_BH.plot <- as.data.frame(t(p.adjust(fit_gest_age_pval,method="BH")))
+rownames(pvalues_gest_age_GOASSESS_BH.plot) <- "pvalues_gest_age_GOASSESS_BH"
+
+
+pvalues_birthwt_kg_GOASSESS_BH.plot <- as.data.frame(t(p.adjust(fit_birthwt_kg_pval,method="BH")))
+rownames(pvalues_birthwt_kg_GOASSESS_BH.plot) <- "pvalues_birthwt_kg_GOASSESS_BH"
+
+library(reshape2) 
+
+PRSimaging_GOASSESS.plot <- rbind(CortexVol_GOASSESS_beta, gaPRS_GOASSESS_beta, bwPRS_GOASSESS_beta, gest_age_GOASSESS_beta, birthwt_kg_GOASSESS_beta) 
+PRSimaging_GOASSESS.plot <- PRSimaging_GOASSESS.plot %>% mutate(predictor = rownames(PRSimaging_GOASSESS.plot))
+PRSimaging_GOASSESS.plot <- melt(PRSimaging_GOASSESS.plot)
+ 
+###
+PRSimaging_GOASSESS_pval.plot <- rbind(pvalues_CortexVol_GOASSESS_BH.plot, pvalues_gaPRS_GOASSESS_BH.plot, pvalues_bwPRS_GOASSESS_BH.plot, pvalues_gest_age_GOASSESS_BH.plot, pvalues_birthwt_kg_GOASSESS_BH.plot)
+  
+#add column for significance in dataframe... omg these variable names are horrifying lol
+PRSimaging_GOASSESS_pval.plot <- PRSimaging_GOASSESS_pval.plot %>% mutate(predictor = PRSimaging_GOASSESS.plot$predictor[1:5])
+PRSimaging_GOASSESS_pval.plot <- melt(PRSimaging_GOASSESS_pval.plot) 
+identical(PRSimaging_GOASSESS.plot$predictor, PRSimaging_GOASSESS_pval.plot$predictor) # excellent :D 
+identical(PRSimaging_GOASSESS_pval.plot$variable, PRSimaging_GOASSESS.plot$variable) # excellent :D 
+
+colnames(PRSimaging_GOASSESS_pval.plot)[3] <- "adjusted_p.value"
+
+
+# geom_point this needs fixing
+(PRSimaging_GOASSESS_geompoint <- (ggplot(data = p , aes(x = predictor, y = variable, shape=significance)) +
+  geom_point(aes(size=abs(value), color = value<0)) +  scale_size(range = c(3, 4)) + labs(size = "t value") + scale_shape_manual(values = c(4, 16)) + 
+  theme_minimal() +  coord_fixed(ratio=.7) +
+  theme(axis.text.y = element_text(size = 6), axis.text.x = element_text(angle=45, hjust = 1))))
+
+ggsave(PRSimaging_GOASSESS_geompoint, file="PRSimaging_GOASSESS.pdf", dpi=300)
+
+
+ 
+```
+
+
+10/6/2021
+# figure - gestage, bw, ga and bw PRS predicting clinical factors (t-value)
+```{r}
+# make dataframe of each PRS and each GOASSESS/clinical variable beta coeff from lm, and adjusted pvalues
+ 
+a <- which(names(imaging_PRS_clinical) == 'GO_Overall_Psychopathology')
+b <- which(names(imaging_PRS_clinical) == "psychosisJCPP_F3_Negative_3Fac")
+
+gaPRS.clinical_lm <- as.data.frame(lapply(imaging_PRS_clinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + Cummulative_Stress_Load_No_Rape + envSES + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3]))
+gaPRS.clinical_pval <- lapply(imaging_PRS_clinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + Cummulative_Stress_Load_No_Rape + envSES + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Pr(>|t|)"][3])  
+gaPRS.clinical_sigoutcomes <- which(gaPRS.clinical_pval < 0.05) 
+which(p.adjust(gaPRS.clinical_pval, method = "BH") < 0.05)
+
+gaPRS.clinical_tval <- as.data.frame(lapply(imaging_PRS_clinical[,a:b], function(x) summary(lm(x ~ sex + ga_PRS_inverse + ageAtClinicalAssess1 + Cummulative_Stress_Load_No_Rape + envSES + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"t value"][3]))  
+ 
+
+bwPRS.clinical_lm <- as.data.frame(lapply(imaging_PRS_clinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + Cummulative_Stress_Load_No_Rape + envSES + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3]))
+bwPRS.clinical_pval <- lapply(imaging_PRS_clinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + Cummulative_Stress_Load_No_Rape + envSES + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Pr(>|t|)"][3])  
+bwPRS.clinical_sigoutcomes <- which(bwPRS.clinical_pval < 0.05) 
+which(p.adjust(bwPRS.clinical_pval, method = "BH") < 0.05) # effect disappears when control for envSES / trauma for bwPRS
+
+bwPRS.clinical_tval <- as.data.frame(lapply(imaging_PRS_clinical[,a:b], function(x) summary(lm(x ~ sex + bw_PRS_std + ageAtClinicalAssess1 + Cummulative_Stress_Load_No_Rape + envSES + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"t value"][3]))  
+
+ga.clinical_lm <- as.data.frame(lapply(imaging_PRS_clinical[,a:b], function(x) summary(lm(x ~ sex + gest_age + ageAtClinicalAssess1 + Cummulative_Stress_Load_No_Rape + envSES + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3]))
+ga.clinical_pval <- lapply(imaging_PRS_clinical[,a:b], function(x) summary(lm(x ~ sex + gest_age + ageAtClinicalAssess1 + Cummulative_Stress_Load_No_Rape + envSES + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Pr(>|t|)"][3])  
+ga.clinical_sigoutcomes <- which(ga.clinical_pval < 0.05) 
+which(p.adjust(ga.clinical_pval, method = "BH") < 0.05) # effect disappears when control for envSES / trauma for ga
+
+ga.clinical_tval <- as.data.frame(lapply(imaging_PRS_clinical[,a:b], function(x) summary(lm(x ~ sex + gest_age + ageAtClinicalAssess1 + Cummulative_Stress_Load_No_Rape + envSES + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"t value"][3]) )
+
+bw.clinical_lm <- as.data.frame(lapply(imaging_PRS_clinical[,a:b], function(x) summary(lm(x ~ sex + birthwt_kg + ageAtClinicalAssess1 + Cummulative_Stress_Load_No_Rape + envSES + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Estimate"][3]))
+bw.clinical_pval <- lapply(imaging_PRS_clinical[,a:b], function(x) summary(lm(x ~ sex + birthwt_kg + ageAtClinicalAssess1 + Cummulative_Stress_Load_No_Rape + envSES + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"Pr(>|t|)"][3])  
+bw.clinical_sigoutcomes <- which(bw.clinical_pval < 0.05) 
+which(p.adjust(bw.clinical_pval, method = "BH") < 0.05) # effect disappears when control for envSES / trauma for bw
+
+bw.clinical_tval <- as.data.frame(lapply(imaging_PRS_clinical[,a:b], function(x) summary(lm(x ~ sex + birthwt_kg + ageAtClinicalAssess1 + Cummulative_Stress_Load_No_Rape + envSES + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=imaging_PRS_clinical))$coefficients[,"t value"][3])  )
+
+ 
+#these are the adjusted p-values i should use
+  
+adj.pval_gaPRS.clinical.plot <- as.data.frame(t(p.adjust(gaPRS.clinical_pval,method="BH")))
+rownames(adj.pval_gaPRS.clinical.plot) <- "pvalues_gaPRS_GOASSESS_BH"
+
+adj.pval_bwPRS.clinical.plot <- as.data.frame(t(p.adjust(bwPRS.clinical_pval,method="BH")))
+rownames(adj.pval_bwPRS.clinical.plot) <- "pvalues_bwPRS_GOASSESS_BH"
+
+adj.pval_ga.clinical.plot <- as.data.frame(t(p.adjust(ga.clinical_pval,method="BH")))
+rownames(adj.pval_ga.clinical.plot) <- "pvalues_gest_age_GOASSESS_BH"
+
+adj.pval_bw.clinical.plot <- as.data.frame(t(p.adjust(bw.clinical_pval,method="BH")))
+rownames(adj.pval_bw.clinical.plot) <- "pvalues_birthwt_kg_GOASSESS_BH"
+
+library(reshape2) 
+library(dplyr)
+plot <- as.data.frame(rbind(gaPRS.clinical_tval, bwPRS.clinical_tval, ga.clinical_tval, bw.clinical_tval))
+plot <- plot %>% mutate(predictor = rownames(plot))
+plot <- melt(plot)
+ 
+###
+pval.plot <- rbind(adj.pval_gaPRS.clinical.plot, adj.pval_bwPRS.clinical.plot, adj.pval_ga.clinical.plot, adj.pval_bw.clinical.plot)
+  
+#add column for significance in dataframe... omg these variable names are horrifying lol
+pval.plot <- pval.plot %>% mutate(predictor = plot$predictor[1:4])
+pval.plot <- melt(pval.plot) 
+identical(plot$predictor, pval.plot$predictor) # excellent :D 
+identical(pval.plot$variable, plot$variable) # excellent :D 
+
+colnames(pval.plot)[3] <- "adjusted_p.value"
+ 
+
+p <- plot %>% mutate(adjusted_p.value = pval.plot$adjusted_p.value, significance = ifelse(pval.plot$adjusted_p.value < 0.05, "sig", "insig")) # double check betas and pvalues
+
+
+p <- PRSimaging_GOASSESS.plot %>% mutate(adjusted_p.value = PRSimaging_GOASSESS_pval.plot$adjusted_p.value, significance = ifelse(PRSimaging_GOASSESS_pval.plot$adjusted_p.value < 0.05, "sig", "insig")) # double check betas and pvalues
+p$variable[which(p$adjusted_p.value <0.05)]
+
+pfactor <- which(p$variable == "GO_Overall_Psychopathology")
+psychosisJCPP_neg2 <- which(p$variable == "psychosisJCPP_F2_Negative_2Fac")
+psychosisJCPP_neg3 <- which(p$variable == "psychosisJCPP_F3_Negative_3Fac")
+
+p2 <-p[c(pfactor, psychosisJCPP_neg2, psychosisJCPP_neg3),]
+#p <- p %>% mutate(value = ifelse(significance == 'sig', value, 'NA')) # get rid of betas if they're not significant
+ 
+# geom_point this needs fixing
+(bubble.plot <- (ggplot(data = p2, aes(x = predictor, y = variable, shape=significance)) +
+  geom_point(aes(size=abs(value), color = value<0)) +  scale_size(range = c(1, 10)) + labs(size = "t-value") + scale_shape_manual(values = c(1, 16)) + scale_x_discrete(name ="Predictor", 
+                    limits=c("gest_age", "birthwt_kg", "ga_PRS_inverse", "bw_PRS_std"), labels=c("Gestational Age", "Birthweight", "GestAge PRS", "Birthwt PRS")) + 
+  theme_minimal() +  coord_fixed(ratio=.7) + scale_y_discrete(name = "", labels=c("Psychosis JCPP F3 Negative", "Psychosis JCPP F2 Negative", "GO Overall Psychopathology")) + 
+  theme(axis.title.x = element_text(size = 12, vjust = -10), axis.title.y = element_text(size = 12, hjust = 0.5, vjust = 5), axis.text.x = element_text(size = 10, vjust = -3, hjust = 0.5), axis.text.y = element_text(size = 10))))
+
+ggsave(bubble.plot, file="pnc_clinical.pdf", dpi=300)
+
+
+
+
+```
+
+
+# start here for dti data
+•	DONE -- exclude subs in n1601_dti_qa_20170301.csv who have 1 in exclude field -- i'm excluding all the unique participants who have exclude == 1 in ALL the exclude variables 
+•	can include meanrelrms (motion) as covariate as well
+•	DONE -- would ignore JHU labels and focus on JHU white matter tracts for now - lots of labels go into one tract, see https://neurovault.org/images/1401/ and https://neurovault.org/images/1403/ for names. for the tracts it looks like they have template space and native space; i'd usually use native space if picking but it sounds like David has usually used template space. they should be super highly correlated so it doesn't really matter
+  --- I'M GOING TO LOOK AT THEM IN NATIVE SPACE BECAUSE TEMPLATE SPACE DATA HAS A TON OF NA'S AND I DON'T KNOW WHY.
+• ???? -- can also look at at jlf values which include gray matter regions and are in oasis space, will add key below
+•	what's in there is: FA (fractional anisotropy), RD (radial diffusivity) AD (axial difffisuvity) and TR (trace). Would focus on FA and MD (mean diffusivity) which you just calculate as MD = (AD + RD*2)/3
+
+```{r}
+
+# load data 
+# tracts are in NATIVE space
+pnc <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/scripts/10042021_imaging_PRS_clinical.csv")
+dti_qa.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_dti_qa_20170301.csv")
+dti_labelsAD.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_JHULabelsAD_20170321.csv")
+dti_labelsFA.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_JHULabelsFA_20170321.csv")
+dti_labelsRD.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_JHULabelsRD_20170321.csv")
+dti_labelsTR.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_JHULabelsTR_20170321.csv")
+dti_tractAD.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_JHUTractAD_20170321.csv")
+dti_tractFA.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_JHUTractFA_20170321.csv")
+dti_tractRD.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_JHUTractRD_20170321.csv")
+dti_tractTR.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_JHUTractTR_20170321.csv")
+
+dti_valuesAD.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_jlfADValues_20170411.csv")
+dti_valuesFA.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_jlfFAValues_20170411.csv")
+dti_valuesRD.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_jlfRDValues_20170411.csv")
+dti_valuesTR.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_jlfTRValues_20170411.csv")
+
+dti_labels <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/OASIS30BilateralLabels.csv")
+ 
+```
+
+
+•	exclude subs in n1601_dti_qa_20170301.csv who have 1 in exclude field -- i'm excluding all the unique participants who have exclude == 1 in ALL the exclude variables
+
+dti32Exclude 
+dti32Exclude
+dti32QAManualScoreExclude - all of these are in dti32exclude
+dti64QAManualScoreExclude - all of these are in dti32exclude
+dti32ProtocolValidationStatusExclude -- but need to include these guys
+dti64ProtocolValidationStatusExclude -- also unique
+```{r}
+identical(dti_qa.raw$HBID[which(dti_qa.raw$dti32Exclude == 1)], dti_qa.raw$HBID[which(dti_qa.raw$dti64Exclude == 1)]) 
+identical(dti_qa.raw$HBID[which(dti_qa.raw$dti32qa.rawManualScoreExclude == 1)], dti_qa.raw$HBID[which(dti_qa.raw$dti64qa.rawManualScoreExclude == 1)])
+
+length(dti_qa.raw$HBID[which(dti_qa.raw$dti32ProtocolValidationStatusExclude == 1)]) #164
+length(dti_qa.raw$HBID[which(dti_qa.raw$dti64ProtocolValidationStatusExclude == 1)]) #180
+
+length(unique(dti_qa.raw$HBID[which(dti_qa.raw$dti32ProtocolValidationStatusExclude == 1)], dti_qa.raw$HBID[which(dti_qa.raw$dti32qa.rawManualScoreExclude == 1)])) 
+
+length(which(dti_qa.raw$HBID[which(dti_qa.raw$dti32ProtocolValidationStatusExclude == 1)] %in% dti_qa.raw$HBID[which(dti_qa.raw$dti32qa.rawManualScoreExclude == 1)]))
+
+# remove people with exclude == 1. 
+x <- c(which(dti_qa.raw$dti32Exclude == 1), which(dti_qa.raw$dti64Exclude == 1), which(dti_qa.raw$dti32qa.rawManualScoreExclude == 1), which(dti_qa.raw$dti64qa.rawManualScoreExclude == 1), which(dti_qa.raw$dti32ProtocolValidationStatusExclude == 1), which(dti_qa.raw$dti64ProtocolValidationStatusExclude == 1))
+to_exclude <- unique(x)
+HBID <- dti_qa.raw$HBID[-to_exclude]
+
+# order all the dti dataframes according to HBID
+dti_qa <- dti_qa.raw[match(HBID, dti_qa.raw$HBID),]
+dti_labelsAD <- dti_labelsAD.raw[match(HBID, dti_labelsAD.raw$HBID),]
+dti_labelsFA <- dti_labelsFA.raw[match(HBID, dti_labelsFA.raw$HBID),]
+dti_labelsRD <- dti_labelsRD.raw[match(HBID, dti_labelsRD.raw$HBID),]
+dti_labelsTR <- dti_labelsTR.raw[match(HBID, dti_labelsTR.raw$HBID),]
+dti_tractAD <- dti_tractAD.raw[match(HBID, dti_tractAD.raw$HBID),]
+dti_tractFA <- dti_tractFA.raw[match(HBID, dti_tractFA.raw$HBID),]
+dti_tractRD <- dti_tractRD.raw[match(HBID, dti_tractRD.raw$HBID),]
+dti_tractTR <- dti_tractTR.raw[match(HBID, dti_tractTR.raw$HBID),]
+dti_valuesAD <- dti_valuesAD.raw[match(HBID, dti_valuesAD.raw$HBID),]
+dti_valuesFA <- dti_valuesFA.raw[match(HBID, dti_valuesFA.raw$HBID),]
+dti_valuesRD <- dti_valuesRD.raw[match(HBID, dti_valuesRD.raw$HBID),]
+dti_valuesTR <- dti_valuesTR.raw[match(HBID, dti_valuesTR.raw$HBID),]
+ 
+```
+
+
+# Would focus on FA and MD (mean diffusivity) which you just calculate as MD = (AD + RD*2)/3
+```{r}
+library(dplyr)
+names(dti_tractFA)
+identical(dti_tractFA$HBID, dti_tractRD$HBID)
+
+
+dti_tractMD <- data.frame(matrix(NA, nrow = nrow(dti_tractAD), ncol = ncol(dti_tractAD)))
+ 
+for (i in 1:ncol(dti_tractAD))
+{ 
+  MD = (dti_tractAD[,i] + dti_tractRD[,i]*2)/3
+  column_name <-  gsub(x = names(dti_tractAD)[i], pattern = "ad_", replacement = "md_")
+  dti_tractMD[,i] <- MD
+  names(dti_tractMD)[i] <- column_name
+}
+dti <- as.data.frame(cbind(dti_qa, dti_tractFA[,-1], dti_tractAD[,-1], dti_tractRD [,-1], dti_tractMD[, -1]))
+
+identical(dti_qa$HBID, dti_tractFA$HBID)
+
+cor.test(dti_qa$dti32MeanRelRMS, dti_qa$dti64MeanRelRMS)
+```
+
+
+# bind dti with the pnc/imaging prs dataframe
+```{r}
+dti_ordered <- dti[match(pnc$HBID, dti$HBID),]
+ pnc_dti <- as.data.frame(cbind(pnc, dti_ordered[,-1]))
+ 
+```
+
+# run linear regression on dti -- FA and MD 
+```{r}
+
+c <- which(grepl("dti_dtitk_jhutract_fa_atr_l", colnames(pnc_dti)))
+d <- which(grepl("dti_dtitk_jhutract_fa_uf_r", colnames(pnc_dti)))
+e <- which(grepl("dti_dtitk_jhutract_md_atr_l", colnames(pnc_dti)))
+f<- which(grepl("dti_dtitk_jhutract_md_uf_r", colnames(pnc_dti)))
+
+ 
+gaPRS_dti <- lapply(pnc_dti[,c(c:d, e:f)], function(x) summary(lm(x ~ sex + ga_PRS_inverse + Cummulative_Stress_Load_No_Rape + ageAtClinicalAssess1 + dti64MeanRelRMS + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=pnc_dti)))  
+gaPRS_dti_pval <- lapply(pnc_dti[,c(c:d, e:f)], function(x) summary(lm(x ~ sex + ga_PRS_inverse + Cummulative_Stress_Load_No_Rape+  ageAtClinicalAssess1 + dti64MeanRelRMS + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=pnc_dti))$coefficients[,"Pr(>|t|)"][3])  
+gaPRS_dti_pval.sigoutcomes <- which(gaPRS_dti_pval < 0.05) 
+gaPRS_dti[gaPRS_dti_pval.sigoutcomes]  
+which(p.adjust(gaPRS_dti_pval, method="BH") < 0.05)
+
+bwPRS_dti <- lapply(pnc_dti[,c(c:d, e:f)], function(x) summary(lm(x ~ sex + bw_PRS_std + Cummulative_Stress_Load_No_Rape+  ageAtClinicalAssess1 + dti64MeanRelRMS + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=pnc_dti)))  
+bwPRS_dti_pval <- lapply(pnc_dti[,c(c:d, e:f)], function(x) summary(lm(x ~ sex + bw_PRS_std + Cummulative_Stress_Load_No_Rape+ ageAtClinicalAssess1 + dti64MeanRelRMS + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=pnc_dti))$coefficients[,"Pr(>|t|)"][3])  
+bwPRS_dti_pval.sigoutcomes <- which(bwPRS_dti_pval < 0.05) 
+bwPRS_dti_pval[bwPRS_dti_pval.sigoutcomes]  
+which(p.adjust(bwPRS_dti_pval, method="BY") < 0.05)
+  
+```
+
+
+# look at jlf?
+```{r}
+
+
+jlfAD.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_jlfADValues_20170411.csv")
+jlfFA.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_jlfFAValues_20170411.csv")
+jlfRD.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_jlfRDValues_20170411.csv")
+jlfTR.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_jlfTRValues_20170411.csv")
+
+jlfAD_WM.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_jlfWmLobesADValues_20170405.csv")
+jlfFA_WM.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_jlfWmLobesFAValues_20170405.csv")
+jlfRD_WM.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_jlfWmLobesRDValues_20170405.csv")
+jlfTR_WM.raw <- read.csv("/Users/audreyluo/Box/PhD_Land/Aaron/data/imaging/dti/n1601_jlfWmLobesTRValues_20170405.csv")
+
+# remove people with exclude == 1. 
+x <- c(which(dti_qa.raw$dti32Exclude == 1), which(dti_qa.raw$dti64Exclude == 1), which(dti_qa.raw$dti32qa.rawManualScoreExclude == 1), which(dti_qa.raw$dti64qa.rawManualScoreExclude == 1), which(dti_qa.raw$dti32ProtocolValidationStatusExclude == 1), which(dti_qa.raw$dti64ProtocolValidationStatusExclude == 1))
+to_exclude <- unique(x)
+HBID <- dti_qa.raw$HBID[-to_exclude]
+
+jlfAD <- jlfAD.raw[match(HBID, jlfAD.raw$HBID),]
+jlfFA <- jlfFA.raw[match(HBID, jlfFA.raw$HBID),]
+jlfRD <- jlfRD.raw[match(HBID, jlfRD.raw$HBID),]
+jlfTR <- jlfTR.raw[match(HBID, jlfTR.raw$HBID),]
+ 
+jlfAD_WM <- jlfAD_WM.raw[match(HBID, jlfAD_WM.raw$HBID),]
+jlfFA_WM <- jlfFA_WM.raw[match(HBID, jlfFA_WM.raw$HBID),]
+jlfRD_WM <- jlfRD_WM.raw[match(HBID, jlfRD_WM.raw$HBID),]
+jlfTR_WM <- jlfTR_WM.raw[match(HBID, jlfTR_WM.raw$HBID),]
+
+names(jlfAD)
+names(jlfTR_WM)
+
+jlfMD <- data.frame(matrix(NA, nrow = nrow(jlfAD), ncol = ncol(jlfAD)))
+ 
+for (i in 1:ncol(jlfAD))
+{ 
+  MD = (jlfAD[,i] + jlfRD[,i]*2)/3
+  column_name <-  gsub(x = names(jlfAD)[i], pattern = "ad_", replacement = "md_")
+  jlfMD[,i] <- MD
+  names(jlfMD)[i] <- column_name
+}
+jlf <- as.data.frame(cbind(jlfFA, jlfAD[,-1], jlfRD [,-1], jlfMD[, -1]))
+
+jlf_ordered <- jlf[match(pnc_dti$HBID, jlf$HBID),]
+
+jlfMD_WM <- data.frame(matrix(NA, nrow = nrow(jlfAD), ncol = ncol(jlfAD_WM)))
+ 
+for (i in 1:ncol(jlfAD_WM))
+{ 
+  MD = (jlfAD_WM[,i] + jlfRD[,i]*2)/3
+  column_name <-  gsub(x = names(jlfAD_WM)[i], pattern = "ad_", replacement = "md_")
+  jlfMD_WM[,i] <- MD
+  names(jlfMD_WM)[i] <- column_name
+}
+jlf_WM <- as.data.frame(cbind(jlfFA_WM, jlfAD_WM[,-1], jlfRD_WM[,-1], jlfMD_WM[, -1]))
+
+jlf_WM_ordered <- jlf_WM[match(pnc_dti$HBID, jlf_WM$HBID),]
+
+pnc_dti.jlf <- as.data.frame(cbind(pnc_dti, jlf_ordered[,-1], jlf_WM_ordered[,-1]))
+ 
+names(pnc_dti.jlf)
+names(jlf_WM_ordered)
+names(jlf_ordered)
+
+```
+
+
+# jlf linear regressions
+```{r}
+
+# gm jlf
+c <- which(grepl("dti_jlf_fa_R_Accumbens", colnames(pnc_dti.jlf)))
+d <- which(grepl("dti_jlf_fa_L_TTG", colnames(pnc_dti.jlf)))
+e <- which(grepl("dti_jlf_md_R_Accumbens_Area", colnames(pnc_dti.jlf)))
+f<- which(grepl("dti_jlf_md_L_TTG", colnames(pnc_dti.jlf)))
+
+ 
+gaPRS_dti.jlf <- lapply(pnc_dti.jlf[,c(c:d, e:f)], function(x) summary(lm(x ~ sex + ga_PRS_inverse + Cummulative_Stress_Load_No_Rape + ageAtClinicalAssess1 + dti64MeanRelRMS + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=pnc_dti.jlf)))  
+gaPRS_dti.jlf_pval <- lapply(pnc_dti.jlf[,c(c:d, e:f)], function(x) summary(lm(x ~ sex + ga_PRS_inverse + Cummulative_Stress_Load_No_Rape+  ageAtClinicalAssess1 + dti64MeanRelRMS + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=pnc_dti.jlf))$coefficients[,"Pr(>|t|)"][3])  
+gaPRS_dti.jlf_pval.sigoutcomes <- which(gaPRS_dti.jlf_pval < 0.05) 
+gaPRS_dti.jlf[gaPRS_dti.jlf_pval.sigoutcomes]  
+which(p.adjust(gaPRS_dti.jlf_pval, method="BH") < 0.05)
+
+ 
+bwPRS_dti.jlf <- lapply(pnc_dti.jlf[,c(c:d, e:f)], function(x) summary(lm(x ~ sex + bw_PRS_std + Cummulative_Stress_Load_No_Rape+  ageAtClinicalAssess1 + dti64MeanRelRMS + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=pnc_dti.jlf)))  
+bwPRS_dti.jlf_pval <- lapply(pnc_dti.jlf[,c(c:d, e:f)], function(x) summary(lm(x ~ sex + bw_PRS_std + Cummulative_Stress_Load_No_Rape+ ageAtClinicalAssess1 + dti64MeanRelRMS + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=pnc_dti.jlf))$coefficients[,"Pr(>|t|)"][3])  
+bwPRS_dti.jlf_pval.sigoutcomes <- which(bwPRS_dti.jlf_pval < 0.05) 
+bwPRS_dti.jlf_pval[bwPRS_dti.jlf_pval.sigoutcomes]  
+which(p.adjust(bwPRS_dti.jlf_pval, method="BY") < 0.05)
+
+
+# wm jlf
+
+
+c <- which(grepl("dti_jlf_fa_L_Limbic_Lobe_WM", colnames(pnc_dti.jlf)))
+d <- which(grepl("dti_jlf_fa_R_Temporal_Lobe_WM", colnames(pnc_dti.jlf)))
+e <- which(grepl("dti_jlf_md_L_Limbic_Lobe_WM", colnames(pnc_dti.jlf)))
+f<- which(grepl("dti_jlf_md_R_Temporal_Lobe_WM", colnames(pnc_dti.jlf)))
+
+ 
+gaPRS_dti.jlf_WM <- lapply(pnc_dti.jlf[,c(c:d, e:f)], function(x) summary(lm(x ~ sex + ga_PRS_inverse + Cummulative_Stress_Load_No_Rape + ageAtClinicalAssess1 + dti64MeanRelRMS + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=pnc_dti.jlf)))  
+gaPRS_dti.jlf_WM_pval <- lapply(pnc_dti.jlf[,c(c:d, e:f)], function(x) summary(lm(x ~ sex + ga_PRS_inverse + Cummulative_Stress_Load_No_Rape+  ageAtClinicalAssess1 + dti64MeanRelRMS + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=pnc_dti.jlf))$coefficients[,"Pr(>|t|)"][3])  
+gaPRS_dti.jlf_WM_pval.sigoutcomes <- which(gaPRS_dti.jlf_pval < 0.05) 
+gaPRS_dti.jlf_WM[gaPRS_dti.jlf_WM_pval.sigoutcomes]  
+which(p.adjust(gaPRS_dti.jlf_WM_pval, method="BH") < 0.05)
+
+ bwPRS_dti.jlf_WM <- lapply(pnc_dti.jlf[,c(c:d, e:f)], function(x) summary(lm(x ~ sex + bw_PRS_std + Cummulative_Stress_Load_No_Rape + ageAtClinicalAssess1 + dti64MeanRelRMS + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=pnc_dti.jlf)))  
+bwPRS_dti.jlf_WM_pval <- lapply(pnc_dti.jlf[,c(c:d, e:f)], function(x) summary(lm(x ~ sex + bw_PRS_std + Cummulative_Stress_Load_No_Rape+  ageAtClinicalAssess1 + dti64MeanRelRMS + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=pnc_dti.jlf))$coefficients[,"Pr(>|t|)"][3])  
+bwPRS_dti.jlf_WM_pval.sigoutcomes <- which(bwPRS_dti.jlf_pval < 0.05) 
+bwPRS_dti.jlf_WM[bwPRS_dti.jlf_WM_pval.sigoutcomes]  
+which(p.adjust(bwPRS_dti.jlf_WM_pval, method="BH") < 0.05)
+```
+ 
